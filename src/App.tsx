@@ -308,12 +308,39 @@ function Readout(props: { k: string; v: { value: string; unit: string }; peak?: 
 }
 
 function MissionLogo() {
+  // VX monogram — vector recreation of the Valdex mark: an angular "V", an "X"
+  // whose forward stroke sweeps up into a swept blade point, and a thin orbital
+  // swoosh sweeping underneath. Monochrome via a metallic vertical gradient.
   return (
-    <svg width="36" height="36" viewBox="0 0 40 40" fill="none" aria-hidden>
-      <circle cx="20" cy="20" r="18" stroke="var(--vx-blue)" strokeWidth="1.4" opacity="0.45" />
-      <circle cx="20" cy="20" r="13" stroke="var(--vx-line-strong)" strokeWidth="1" opacity="0.6" />
-      <path d="M20 5 L27 31 L20 25 L13 31 Z" fill="var(--vx-blue-bright)" />
-      <circle cx="20" cy="20" r="2.4" fill="var(--vx-go)" />
+    <svg width="60" height="44" viewBox="0 0 240 170" fill="none" aria-label="VX Telemetry" role="img">
+      <defs>
+        <linearGradient id="vxMetal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#eef3fb" />
+          <stop offset="0.55" stopColor="#aab6ce" />
+          <stop offset="1" stopColor="#6b7690" />
+        </linearGradient>
+        <linearGradient id="vxBlade" x1="0" y1="1" x2="1" y2="0">
+          <stop offset="0" stopColor="#8994ad" />
+          <stop offset="0.7" stopColor="#dfe7f4" />
+          <stop offset="1" stopColor="#ffffff" />
+        </linearGradient>
+      </defs>
+
+      {/* orbital swoosh */}
+      <path
+        d="M8,136 C66,170 152,172 214,140 C154,156 78,154 26,138 Z"
+        fill="url(#vxMetal)"
+        opacity="0.8"
+      />
+
+      {/* V */}
+      <path d="M20,34 L44,34 L74,110 L104,34 L128,34 L74,150 Z" fill="url(#vxMetal)" />
+
+      {/* X — back stroke */}
+      <path d="M150,34 L172,34 L214,150 L192,150 Z" fill="url(#vxMetal)" />
+
+      {/* X — forward stroke swept into a blade point */}
+      <path d="M116,150 L140,150 L236,16 L206,30 Z" fill="url(#vxBlade)" />
     </svg>
   );
 }
@@ -1731,8 +1758,8 @@ export default function App() {
             <div className="vx-brand">
               <MissionLogo />
               <div>
-                <div className="vx-brand-mark">VX<b>·</b>TELEMETRY</div>
-                <div className="vx-brand-sub">Ground Station · {modeChip}</div>
+                <div className="vx-brand-mark">TELEMETRY</div>
+                <div className="vx-brand-sub">Valdex · Ground Station · {modeChip}</div>
               </div>
             </div>
           </div>
