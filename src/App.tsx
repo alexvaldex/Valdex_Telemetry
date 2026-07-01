@@ -67,12 +67,13 @@ type Model3D = {
 };
 
 /** ---------- Defaults / presets ---------- */
-const DEFAULT_THEME: ThemeSettings = { bgA: "#050814", bgB: "#070b1b", consoleBg: "#0a0f1f" };
+const DEFAULT_THEME: ThemeSettings = { bgA: "#060b16", bgB: "#04070e", consoleBg: "#03060d" };
 
 const THEME_PRESETS: Array<{ name: string; theme: ThemeSettings }> = [
-  { name: "Deep Space", theme: { bgA: "#050814", bgB: "#070b1b", consoleBg: "#0a0f1f" } },
-  { name: "Midnight Slate", theme: { bgA: "#0b1020", bgB: "#101a33", consoleBg: "#0a0f1f" } },
-  { name: "Graphite", theme: { bgA: "#0a0a0d", bgB: "#151821", consoleBg: "#0e1017" } },
+  { name: "Mission Control", theme: { bgA: "#060b16", bgB: "#04070e", consoleBg: "#03060d" } },
+  { name: "Deep Space", theme: { bgA: "#050814", bgB: "#070b1b", consoleBg: "#050a16" } },
+  { name: "Range Night", theme: { bgA: "#0a0f0c", bgB: "#05090a", consoleBg: "#040807" } },
+  { name: "Graphite", theme: { bgA: "#0d0f14", bgB: "#090b10", consoleBg: "#0a0d13" } },
 ];
 
 /** ---------- Battery tables (per-cell) ---------- */
@@ -274,6 +275,46 @@ const BAUD_RATES = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
 
 // Wrap GridLayout to avoid type errors in some TS setups
 const RGL: any = GridLayout;
+
+/** ---------- Header helpers ---------- */
+const M_TO_FT = 3.280839895;
+
+function fmtUnit(
+  v: number | undefined,
+  system: UnitSystem,
+  kind: "alt" | "vel"
+): { value: string; unit: string } {
+  const unit =
+    kind === "alt" ? (system === "imperial" ? "ft" : "m") : system === "imperial" ? "ft/s" : "m/s";
+  if (typeof v !== "number" || !Number.isFinite(v)) return { value: "—", unit };
+  if (kind === "alt") {
+    return system === "imperial" ? { value: (v * M_TO_FT).toFixed(0), unit } : { value: v.toFixed(0), unit };
+  }
+  return system === "imperial" ? { value: (v * M_TO_FT).toFixed(0), unit } : { value: v.toFixed(1), unit };
+}
+
+function Readout(props: { k: string; v: { value: string; unit: string }; peak?: boolean }) {
+  return (
+    <div className={`vx-readout ${props.peak ? "peak" : ""}`}>
+      <span className="k">{props.k}</span>
+      <span className="v">
+        {props.v.value}
+        {props.v.unit ? <small>{props.v.unit}</small> : null}
+      </span>
+    </div>
+  );
+}
+
+function MissionLogo() {
+  return (
+    <svg width="36" height="36" viewBox="0 0 40 40" fill="none" aria-hidden>
+      <circle cx="20" cy="20" r="18" stroke="var(--vx-blue)" strokeWidth="1.4" opacity="0.45" />
+      <circle cx="20" cy="20" r="13" stroke="var(--vx-line-strong)" strokeWidth="1" opacity="0.6" />
+      <path d="M20 5 L27 31 L20 25 L13 31 Z" fill="var(--vx-blue-bright)" />
+      <circle cx="20" cy="20" r="2.4" fill="var(--vx-go)" />
+    </svg>
+  );
+}
 
 export default function App() {
   /** Transport */
@@ -927,34 +968,164 @@ export default function App() {
   // Hard disable layout mutation in flight mode OR playback.
   const isLayoutEditable = !flightMode && playback.mode !== "playback";
 
+  /** ---------- Mission analytics ---------- */
+
+  // Flight profile phases in canonical order (mirrors the sim / real flight sequence)
+  const PHASE_SEQUENCE = ["PAD", "BOOST", "COAST", "APOGEE", "DROGUE", "MAIN", "LANDED"] as const;
+  type Phase = (typeof PHASE_SEQUENCE)[number];
+
+  // Map a derived-event id to the phase it *begins*.
+  function eventToPhase(id: DerivedEvent["id"]): Phase | null {
+    switch (id) {
+      case "LIFTOFF": return "BOOST";
+      case "BURNOUT": return "COAST";
+      case "APOGEE": return "APOGEE";
+      case "DROGUE": return "DROGUE";
+      case "MAIN": return "MAIN";
+      case "LANDING": return "LANDED";
+      default: return null;
+    }
+  }
+
+  // Current phase = phase begun by the latest event at/before the displayed frame index.
+  const flightPhase: Phase = useMemo(() => {
+    let phase: Phase = "PAD";
+    const idx = display.idx;
+    for (const e of derivedEvents) {
+      if (e.idx > idx) continue;
+      const p = eventToPhase(e.id);
+      if (p) phase = p;
+    }
+    return phase;
+  }, [derivedEvents, display.idx]);
+
+  // Mission clock: T+ MET measured from LIFTOFF; T- countdown to it if not yet lifted off.
+  const missionClock = useMemo(() => {
+    const liftoff = derivedEvents.find((e) => e.id === "LIFTOFF");
+    if (!liftoff) return { label: "T− --:--:--", counting: false };
+    const met = display.t_ms - liftoff.t_ms;
+    const sign = met >= 0 ? "+" : "−";
+    const s = Math.abs(met) / 1000;
+    const hh = Math.floor(s / 3600);
+    const mm = Math.floor((s % 3600) / 60);
+    const ss = Math.floor(s % 60);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return { label: `T${sign} ${pad(hh)}:${pad(mm)}:${pad(ss)}`, counting: met >= 0 };
+  }, [derivedEvents, display.t_ms]);
+
+  // Flight peaks over the displayed frame history.
+  const peaks = useMemo(() => {
+    let maxAlt = -Infinity, maxVel = -Infinity, maxAccel = -Infinity;
+    for (const f of display.frames) {
+      if (typeof f.alt_m === "number" && f.alt_m > maxAlt) maxAlt = f.alt_m;
+      if (typeof f.vel_mps === "number" && f.vel_mps > maxVel) maxVel = f.vel_mps;
+      if (typeof f.ax === "number" && typeof f.ay === "number" && typeof f.az === "number") {
+        const mag = Math.sqrt(f.ax * f.ax + f.ay * f.ay + f.az * f.az);
+        if (mag > maxAccel) maxAccel = mag;
+      }
+    }
+    return {
+      apogeeM: Number.isFinite(maxAlt) ? maxAlt : undefined,
+      maxVelMps: Number.isFinite(maxVel) ? maxVel : undefined,
+      maxAccelG: Number.isFinite(maxAccel) ? maxAccel / 9.80665 : undefined,
+    };
+  }, [display.frames]);
+
+  // GO / NO-GO readiness board.
+  type GoState = "go" | "caution" | "crit" | "nodata";
+  const readiness = useMemo(() => {
+    const live = playback.mode !== "playback";
+    const hasData = display.frames.length > 0;
+
+    // LINK
+    let link: GoState = "nodata";
+    if (!live) link = "go";
+    else if (connStatus !== "connected") link = hasData ? "caution" : "nodata";
+    else if (linkHealth.veryStale) link = "crit";
+    else if (linkHealth.stale) link = "caution";
+    else if (hasData) link = "go";
+
+    // TELEMETRY (packets flowing)
+    let telem: GoState = "nodata";
+    if (!live) telem = hasData ? "go" : "nodata";
+    else if (telemetry.packetsPerSec > 0) telem = "go";
+    else if (connStatus === "connected") telem = "caution";
+
+    // BATTERY
+    let batt: GoState = "nodata";
+    if (typeof linkHealth.battPct === "number") {
+      if (linkHealth.battPct <= battProfile.critPct) batt = "crit";
+      else if (linkHealth.battPct <= battProfile.warnPct) batt = "caution";
+      else batt = "go";
+    } else if (typeof linkHealth.batt === "number") {
+      batt = linkHealth.batt < 3.45 ? "crit" : linkHealth.batt < 3.65 ? "caution" : "go";
+    }
+
+    // GPS
+    let gps: GoState = "nodata";
+    const fix = display.latest?.gps_fix;
+    const sats = display.latest?.gps_sats;
+    if (typeof fix === "number") {
+      if (fix >= 3 || (typeof sats === "number" && sats >= 6)) gps = "go";
+      else if (fix >= 1 || (typeof sats === "number" && sats >= 3)) gps = "caution";
+      else gps = "crit";
+    } else if (display.latest?.lat !== undefined) {
+      gps = "go";
+    }
+
+    // RF
+    let rf: GoState = "nodata";
+    if (typeof linkHealth.rssi === "number") {
+      if (linkHealth.rssi < -110) rf = "crit";
+      else if (linkHealth.rssi < -100) rf = "caution";
+      else rf = "go";
+    }
+
+    return { link, telem, batt, gps, rf };
+  }, [playback.mode, display.frames.length, display.latest, connStatus, linkHealth, telemetry.packetsPerSec, battProfile]);
+
+  const goStateText: Record<GoState, string> = { go: "GO", caution: "HOLD", crit: "NO-GO", nodata: "—" };
+
   return (
-    <div style={{ padding: 16, fontFamily: "system-ui", color: fg }}>
+    <div style={{ position: "relative", zIndex: 1, padding: 14, fontFamily: "var(--vx-font-display)", color: "var(--vx-fg)" }}>
       <style>{`
         :root {
-          --vx-fg: ${fg};
           --vx-bgA: ${theme.bgA};
           --vx-bgB: ${theme.bgB};
           --vx-console: ${theme.consoleBg};
         }
 
         .vx-shell {
-          background: linear-gradient(135deg, var(--vx-bgA), var(--vx-bgB));
-          border-radius: 14px;
+          background:
+            linear-gradient(180deg, rgba(31,157,255,0.03), transparent 240px),
+            linear-gradient(135deg, var(--vx-bgA), var(--vx-bgB));
+          border-radius: 4px;
           padding: 12px;
-          border: 1px solid rgba(255,255,255,0.14);
+          border: 1px solid var(--vx-line);
+          box-shadow: inset 0 0 0 1px rgba(0,0,0,0.4), 0 20px 60px rgba(0,0,0,0.5);
           min-height: 650px;
           position: relative;
         }
+        /* corner ticks on the shell */
+        .vx-shell::before, .vx-shell::after {
+          content: "";
+          position: absolute;
+          width: 14px; height: 14px;
+          border-color: var(--vx-line-strong);
+          pointer-events: none;
+        }
+        .vx-shell::before { top: 6px; left: 6px; border-top: 2px solid; border-left: 2px solid; }
+        .vx-shell::after { bottom: 6px; right: 6px; border-bottom: 2px solid; border-right: 2px solid; }
 
         .vx-widget {
           height: 100%;
-          border-radius: 14px;
+          border-radius: 4px;
           overflow: hidden;
           position: relative;
           color: var(--vx-fg);
         }
 
-        .vx-widget-inner { height: 100%; padding: 10px; box-sizing: border-box; }
+        .vx-widget-inner { height: 100%; padding: 10px 12px; box-sizing: border-box; }
 
         .vx-titlebar {
           display: flex;
@@ -962,59 +1133,84 @@ export default function App() {
           align-items: center;
           cursor: ${isLayoutEditable ? "move" : "default"};
           user-select: none;
-          font-weight: 900;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          font-size: 12px;
+          font-weight: 700;
           opacity: 0.98;
           padding-bottom: 8px;
           margin-bottom: 10px;
-          border-bottom: 1px solid rgba(255,255,255,0.10);
+          border-bottom: 1px solid var(--vx-line);
           gap: 10px;
         }
 
         .vx-xbtn {
-          width: 34px; height: 34px;
-          border-radius: 10px;
-          border: 1px solid rgba(255,255,255,0.20);
-          background: rgba(255,255,255,0.06);
+          width: 30px; height: 30px;
+          border-radius: 3px;
+          border: 1px solid var(--vx-line);
+          background: rgba(120,175,255,0.05);
           color: var(--vx-fg);
           cursor: pointer;
+          transition: all 0.12s ease;
         }
+        .vx-xbtn:hover:not(:disabled) { border-color: var(--vx-crit); color: var(--vx-crit); background: rgba(255,59,71,0.1); }
 
         .vx-select {
-          background: rgba(255,255,255,0.06);
+          background: rgba(10,16,30,0.85);
           color: var(--vx-fg);
-          border: 1px solid rgba(255,255,255,0.14);
-          border-radius: 10px;
-          padding: 6px 8px;
+          border: 1px solid var(--vx-line);
+          border-radius: 3px;
+          padding: 7px 9px;
           outline: none;
+          font-family: var(--vx-font-display);
+          font-size: 12px;
+          letter-spacing: 0.03em;
+          transition: border-color 0.12s ease;
         }
+        .vx-select:hover { border-color: var(--vx-line-strong); }
+        .vx-select:focus { border-color: var(--vx-blue); box-shadow: 0 0 0 2px var(--vx-blue-glow); }
 
         .vx-btn {
-          padding: 8px 10px;
-          border-radius: 10px;
-          border: 1px solid rgba(255,255,255,0.16);
-          background: rgba(255,255,255,0.08);
+          padding: 8px 12px;
+          border-radius: 3px;
+          border: 1px solid var(--vx-line);
+          background: rgba(120,175,255,0.05);
           color: var(--vx-fg);
           cursor: pointer;
-          font-weight: 800;
+          font-family: var(--vx-font-display);
+          font-weight: 600;
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          transition: all 0.12s ease;
         }
-        .vx-btn:hover { background: rgba(255,255,255,0.12); }
-        .vx-btn-primary { background: rgba(90,160,255,0.22); border-color: rgba(90,160,255,0.35); }
-        .vx-btn-danger { background: rgba(255,90,90,0.20); border-color: rgba(255,90,90,0.35); }
-        .vx-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .vx-btn:hover:not(:disabled) { background: rgba(120,175,255,0.12); border-color: var(--vx-line-strong); }
+        .vx-btn-primary {
+          background: rgba(31,157,255,0.16);
+          border-color: rgba(31,157,255,0.5);
+          color: var(--vx-blue-bright);
+        }
+        .vx-btn-primary:hover:not(:disabled) { background: rgba(31,157,255,0.28); box-shadow: 0 0 14px var(--vx-blue-glow); }
+        .vx-btn-danger { background: rgba(255,59,71,0.14); border-color: rgba(255,59,71,0.45); color: #ff8b92; }
+        .vx-btn-danger:hover:not(:disabled) { background: rgba(255,59,71,0.24); }
+        .vx-btn:disabled { opacity: 0.32; cursor: not-allowed; }
 
         .vx-chip {
-          display: inline-block;
-          padding: 2px 8px;
-          border-radius: 999px;
-          border: 1px solid rgba(255,255,255,0.16);
-          background: rgba(255,255,255,0.06);
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 9px;
+          border-radius: 3px;
+          border: 1px solid var(--vx-line);
+          background: rgba(10,16,30,0.6);
+          font-family: var(--vx-font-mono);
+          font-variant-numeric: tabular-nums;
           font-size: 12px;
-          opacity: 0.92;
-          color: ${chipFg};
+          color: var(--vx-fg);
         }
 
         .vx-widget-outline {
-          outline: 1px solid rgba(255,255,255,0.18);
+          outline: 1px solid var(--vx-line);
           outline-offset: -1px;
         }
 
@@ -1029,18 +1225,17 @@ export default function App() {
           position: absolute;
           right: 0; bottom: 0;
           width: 12px; height: 12px;
-          border-right: 2px solid rgba(255,255,255,0.55);
-          border-bottom: 2px solid rgba(255,255,255,0.55);
-          border-radius: 2px;
+          border-right: 2px solid var(--vx-blue);
+          border-bottom: 2px solid var(--vx-blue);
         }
 
         .vx-menu {
           position: fixed;
           min-width: 250px;
-          background: rgba(10,14,30,0.96);
-          border: 1px solid rgba(255,255,255,0.16);
-          border-radius: 12px;
-          box-shadow: 0 18px 50px rgba(0,0,0,0.55);
+          background: rgba(7,11,22,0.97);
+          border: 1px solid var(--vx-line-strong);
+          border-radius: 4px;
+          box-shadow: 0 18px 50px rgba(0,0,0,0.7);
           padding: 6px;
           z-index: 9999;
           color: var(--vx-fg);
@@ -1048,95 +1243,87 @@ export default function App() {
         }
         .vx-menu-item {
           padding: 10px 10px;
-          border-radius: 10px;
+          border-radius: 3px;
           cursor: pointer;
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 10px;
+          font-size: 13px;
         }
-        .vx-menu-item:hover { background: rgba(255,255,255,0.08); }
-        .vx-menu-muted { opacity: 0.7; font-size: 12px; }
+        .vx-menu-item:hover { background: rgba(31,157,255,0.12); }
+        .vx-menu-muted { opacity: 0.6; font-size: 12px; }
 
         .vx-modal-backdrop {
           position: fixed; inset: 0;
-          background: rgba(0,0,0,0.60);
+          background: rgba(2,4,9,0.78);
           display: flex;
           align-items: center;
           justify-content: center;
           z-index: 10000;
+          backdrop-filter: blur(3px);
         }
         .vx-modal {
           width: min(1100px, 92vw);
           height: min(720px, 86vh);
-          background: rgba(10,14,30,0.96);
-          border: 1px solid rgba(255,255,255,0.16);
-          border-radius: 16px;
-          box-shadow: 0 22px 70px rgba(0,0,0,0.65);
+          background: rgba(7,11,22,0.98);
+          border: 1px solid var(--vx-line-strong);
+          border-radius: 4px;
+          box-shadow: 0 22px 70px rgba(0,0,0,0.75);
           color: var(--vx-fg);
           display: grid;
           grid-template-columns: 360px 1fr 360px;
           overflow: hidden;
           backdrop-filter: blur(12px);
         }
-        .vx-pane { padding: 14px; border-right: 1px solid rgba(255,255,255,0.10); overflow: auto; }
+        .vx-pane { padding: 16px; border-right: 1px solid var(--vx-line); overflow: auto; }
         .vx-pane:last-child { border-right: none; }
 
         .vx-input {
           width: 100%;
           padding: 10px 10px;
-          border-radius: 12px;
-          border: 1px solid rgba(255,255,255,0.16);
-          background: rgba(255,255,255,0.06);
+          border-radius: 3px;
+          border: 1px solid var(--vx-line);
+          background: rgba(10,16,30,0.7);
           color: var(--vx-fg);
           outline: none;
           box-sizing: border-box;
+          font-family: var(--vx-font-mono);
         }
+        .vx-input:focus { border-color: var(--vx-blue); box-shadow: 0 0 0 2px var(--vx-blue-glow); }
         .vx-card {
-          border: 1px solid rgba(255,255,255,0.14);
-          background: rgba(255,255,255,0.06);
-          border-radius: 14px;
-          padding: 10px;
+          border: 1px solid var(--vx-line);
+          background: rgba(10,16,30,0.5);
+          border-radius: 4px;
+          padding: 12px;
         }
-        code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 8px; }
+        code {
+          background: rgba(31,157,255,0.1);
+          color: var(--vx-blue-bright);
+          padding: 1px 5px;
+          border-radius: 3px;
+          font-family: var(--vx-font-mono);
+        }
 
         .vx-alertbar { margin: 10px 0 12px; display: flex; flex-direction: column; gap: 8px; }
         .vx-alert {
-          padding: 10px 12px;
-          border-radius: 12px;
-          border: 1px solid rgba(0,0,0,0.10);
+          padding: 10px 14px;
+          border-radius: 3px;
+          border: 1px solid;
+          border-left-width: 4px;
           display: flex;
           justify-content: space-between;
           align-items: center;
           gap: 10px;
-          color: #0b1020;
+          background: rgba(10,16,30,0.85);
+          color: var(--vx-fg);
         }
-        .vx-alert.info { background: rgba(90,160,255,0.16); border-color: rgba(90,160,255,0.30); }
-        .vx-alert.warn { background: rgba(255,190,90,0.18); border-color: rgba(255,190,90,0.34); }
-        .vx-alert.crit { background: rgba(255,90,90,0.18); border-color: rgba(255,90,90,0.34); }
+        .vx-alert .vx-alert-title { text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; font-size: 13px; }
+        .vx-alert.info { border-color: var(--vx-blue); }
+        .vx-alert.warn { border-color: var(--vx-caution); }
+        .vx-alert.crit { border-color: var(--vx-crit); box-shadow: inset 0 0 30px rgba(255,59,71,0.12); }
 
-        .vx-topbar {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          flex-wrap: wrap;
-          margin-bottom: 10px;
-        }
-
-        .vx-topbar-left {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
-
-        .vx-topbar-right {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
+        .vx-topbar { margin-bottom: 12px; }
 
         .vx-toolbar {
           display: flex;
@@ -1145,10 +1332,10 @@ export default function App() {
           gap: 10px;
           flex-wrap: wrap;
           margin-bottom: 12px;
-          padding: 8px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.04);
-          border-radius: 12px;
+          padding: 8px 10px;
+          border: 1px solid var(--vx-line);
+          background: rgba(10,16,30,0.4);
+          border-radius: 4px;
         }
         .vx-toolbar-left, .vx-toolbar-right {
           display: flex;
@@ -1156,46 +1343,235 @@ export default function App() {
           gap: 8px;
           flex-wrap: wrap;
         }
+
+        /* ---------- Mission Control header ---------- */
+        .vx-hdr {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          align-items: stretch;
+          gap: 10px;
+          margin-bottom: 12px;
+        }
+        .vx-hdr-panel {
+          border: 1px solid var(--vx-line);
+          background: linear-gradient(180deg, rgba(31,157,255,0.05), rgba(10,16,30,0.5));
+          border-radius: 4px;
+          padding: 10px 14px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+        .vx-brand {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .vx-brand-mark {
+          font-family: var(--vx-font-display);
+          font-weight: 700;
+          font-size: 22px;
+          letter-spacing: 0.16em;
+          color: var(--vx-fg);
+          line-height: 1;
+        }
+        .vx-brand-mark b { color: var(--vx-blue-bright); }
+        .vx-brand-sub {
+          font-size: 10px;
+          letter-spacing: 0.28em;
+          color: var(--vx-fg-dim);
+          text-transform: uppercase;
+          margin-top: 4px;
+        }
+        .vx-clock {
+          text-align: center;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 2px;
+        }
+        .vx-clock-time {
+          font-family: var(--vx-font-mono);
+          font-variant-numeric: tabular-nums;
+          font-weight: 800;
+          font-size: 40px;
+          line-height: 1;
+          letter-spacing: 0.02em;
+          color: var(--vx-fg);
+        }
+        .vx-clock-time.counting { color: var(--vx-go); text-shadow: 0 0 20px var(--vx-go-glow); }
+        .vx-phase-track {
+          display: flex;
+          gap: 4px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        .vx-phase-step {
+          font-size: 10px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          padding: 3px 7px;
+          border-radius: 2px;
+          border: 1px solid var(--vx-line);
+          color: var(--vx-fg-faint);
+          background: transparent;
+          white-space: nowrap;
+        }
+        .vx-phase-step.done { color: var(--vx-fg-dim); border-color: var(--vx-line); }
+        .vx-phase-step.active {
+          color: var(--vx-bg0);
+          background: var(--vx-blue);
+          border-color: var(--vx-blue-bright);
+          box-shadow: 0 0 14px var(--vx-blue-glow);
+          font-weight: 700;
+        }
+
+        /* GO / NO-GO status board */
+        .vx-status-board {
+          display: grid;
+          grid-auto-flow: column;
+          gap: 8px;
+          align-items: stretch;
+        }
+        .vx-status-cell {
+          border: 1px solid var(--vx-line);
+          border-radius: 3px;
+          padding: 6px 10px;
+          min-width: 74px;
+          background: rgba(10,16,30,0.5);
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .vx-status-cell .k { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--vx-fg-dim); }
+        .vx-status-cell .v {
+          font-family: var(--vx-font-display);
+          font-weight: 700;
+          font-size: 14px;
+          letter-spacing: 0.06em;
+          display: flex; align-items: center; gap: 6px;
+        }
+        .vx-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+        .vx-go .v { color: var(--vx-go); } .vx-go .vx-dot { background: var(--vx-go); box-shadow: 0 0 8px var(--vx-go-glow); }
+        .vx-caution .v { color: var(--vx-caution); } .vx-caution .vx-dot { background: var(--vx-caution); box-shadow: 0 0 8px var(--vx-caution-glow); }
+        .vx-crit .v { color: var(--vx-crit); } .vx-crit .vx-dot { background: var(--vx-crit); box-shadow: 0 0 8px var(--vx-crit-glow); }
+        .vx-nodata .v { color: var(--vx-fg-faint); } .vx-nodata .vx-dot { background: var(--vx-fg-faint); }
+
+        /* Telemetry readout strip */
+        .vx-readouts {
+          display: flex;
+          gap: 1px;
+          flex-wrap: wrap;
+          border: 1px solid var(--vx-line);
+          border-radius: 4px;
+          overflow: hidden;
+          background: var(--vx-line);
+        }
+        .vx-readout {
+          background: rgba(8,13,24,0.9);
+          padding: 8px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+          min-width: 92px;
+          flex: 1;
+        }
+        .vx-readout .k { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--vx-fg-dim); }
+        .vx-readout .v {
+          font-family: var(--vx-font-mono);
+          font-variant-numeric: tabular-nums;
+          font-weight: 700;
+          font-size: 18px;
+          color: var(--vx-fg);
+        }
+        .vx-readout .v small { font-size: 11px; color: var(--vx-fg-dim); font-weight: 500; margin-left: 3px; }
+        .vx-readout.peak .v { color: var(--vx-blue-bright); }
       `}</style>
 
-      {/* Title + Status Strip */}
+      {/* ---------- Mission Control Header ---------- */}
       <div className="vx-topbar">
-        <div className="vx-topbar-left">
-          <h2 style={{ margin: 0 }}>Valdex Telemetry — Dev</h2>
-          <span className="vx-chip">{modeChip}</span>
-          <span className="vx-chip">t={Math.round(display.t_ms)}ms</span>
-          <span className="vx-chip" title="Frames per second from the active transport">{telemetry.packetsPerSec} pkt/s</span>
-          <span className="vx-chip" title="Time since last telemetry line">Δline={Math.round(linkHealth.msSinceLine)}ms</span>
-          <span className="vx-chip" title="Median dt between frames">dt≈{linkHealth.medianDt ? `${Math.round(linkHealth.medianDt)}ms` : "—"}</span>
-          <span className="vx-chip" title="Drop/gap heuristic">gaps≈{linkHealth.lossScore}%</span>
-          <span className="vx-chip" title="RSSI">RSSI={typeof linkHealth.rssi === "number" ? `${linkHealth.rssi}dBm` : "—"}</span>
-          <span className="vx-chip" title="Battery">Batt={typeof linkHealth.batt === "number" ? `${linkHealth.batt.toFixed(2)}V` : "—"}{typeof linkHealth.battPct === "number" ? ` (${linkHealth.battPct}%)` : ""}</span>
+        <div className="vx-hdr">
+          {/* Brand */}
+          <div className="vx-hdr-panel">
+            <div className="vx-brand">
+              <MissionLogo />
+              <div>
+                <div className="vx-brand-mark">VX<b>·</b>TELEMETRY</div>
+                <div className="vx-brand-sub">Ground Station · {modeChip}</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Mission clock + phase */}
+          <div className="vx-hdr-panel vx-clock">
+            <div className={`vx-clock-time ${missionClock.counting ? "counting" : ""}`}>{missionClock.label}</div>
+            <div className="vx-phase-track">
+              {PHASE_SEQUENCE.map((p) => {
+                const active = p === flightPhase;
+                const done = PHASE_SEQUENCE.indexOf(p) < PHASE_SEQUENCE.indexOf(flightPhase);
+                return (
+                  <span key={p} className={`vx-phase-step ${active ? "active" : done ? "done" : ""}`}>{p}</span>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* GO / NO-GO board */}
+          <div className="vx-hdr-panel">
+            <div className="vx-status-board">
+              {([
+                ["LINK", readiness.link],
+                ["TELEM", readiness.telem],
+                ["PWR", readiness.batt],
+                ["GPS", readiness.gps],
+                ["RF", readiness.rf],
+              ] as Array<[string, GoState]>).map(([k, st]) => (
+                <div key={k} className={`vx-status-cell vx-${st}`}>
+                  <span className="k">{k}</span>
+                  <span className="v"><span className={`vx-dot ${st === "go" || st === "crit" ? "" : ""}`} />{goStateText[st]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
-        <div className="vx-topbar-right">
-          {display.mode === "live" ? (
-            <button className={`vx-btn ${frozen ? "vx-btn-danger" : ""}`} onClick={toggleFreeze} disabled={playback.mode === "playback"}>
-              {frozen ? "Frozen" : "Freeze"} (F)
+        {/* Telemetry readout strip + primary actions */}
+        <div style={{ display: "flex", gap: 10, alignItems: "stretch", flexWrap: "wrap" }}>
+          <div className="vx-readouts" style={{ flex: 1, minWidth: 320 }}>
+            <Readout k="ALT" v={fmtUnit(display.latest?.alt_m, globalUnits, "alt")} />
+            <Readout k="VEL" v={fmtUnit(display.latest?.vel_mps, globalUnits, "vel")} />
+            <Readout k="APOGEE" peak v={fmtUnit(peaks.apogeeM, globalUnits, "alt")} />
+            <Readout k="MAX V" peak v={fmtUnit(peaks.maxVelMps, globalUnits, "vel")} />
+            <Readout k="MAX G" peak v={peaks.maxAccelG !== undefined ? { value: peaks.maxAccelG.toFixed(1), unit: "g" } : { value: "—", unit: "" }} />
+            <Readout k="RSSI" v={typeof linkHealth.rssi === "number" ? { value: String(linkHealth.rssi), unit: "dBm" } : { value: "—", unit: "" }} />
+            <Readout k="RATE" v={{ value: String(telemetry.packetsPerSec), unit: "pkt/s" }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {display.mode === "live" ? (
+              <button className={`vx-btn ${frozen ? "vx-btn-danger" : ""}`} onClick={toggleFreeze} disabled={playback.mode === "playback"}>
+                {frozen ? "● Frozen" : "Freeze"} (F)
+              </button>
+            ) : (
+              <button className="vx-btn" onClick={exitPlayback}>Exit Playback</button>
+            )}
+
+            <button
+              className={`vx-btn ${flightMode ? "vx-btn-danger" : "vx-btn-primary"}`}
+              onClick={() => {
+                if (!flightMode) setFlightModePersist(true);
+                else {
+                  const ok = window.confirm("Unlock layout? This enables dragging/resizing/adding/removing widgets.");
+                  if (ok) setFlightModePersist(false);
+                }
+              }}
+            >
+              {flightMode ? "◆ Flight (Locked)" : "◇ Build Mode"}
             </button>
-          ) : (
-            <button className="vx-btn" onClick={exitPlayback}>Exit Playback</button>
-          )}
 
-          <button
-            className={`vx-btn ${flightMode ? "vx-btn-danger" : "vx-btn-primary"}`}
-            onClick={() => {
-              if (!flightMode) setFlightModePersist(true);
-              else {
-                const ok = window.confirm("Unlock layout? This enables dragging/resizing/adding/removing widgets.");
-                if (ok) setFlightModePersist(false);
-              }
-            }}
-          >
-            {flightMode ? "Flight Mode (Locked)" : "Build Mode (Editable)"}
-          </button>
-
-          <button className="vx-btn" onClick={() => setSettingsOpen(true)} title="Settings">Settings</button>
-          <button className="vx-btn" onClick={() => setPaletteOpen(true)} title="Command Palette (Ctrl+K)">Ctrl+K</button>
+            <button className="vx-btn" onClick={() => setSettingsOpen(true)} title="Settings">Settings</button>
+            <button className="vx-btn" onClick={() => setPaletteOpen(true)} title="Command Palette (Ctrl+K)">⌘K</button>
+          </div>
         </div>
       </div>
 
@@ -1204,9 +1580,12 @@ export default function App() {
         <div className="vx-alertbar">
           {alerts.map((a) => (
             <div key={a.id} className={`vx-alert ${a.level}`}>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 900 }}>{a.title}</div>
-                {a.detail ? <div style={{ opacity: 0.9, fontSize: 12 }}>{a.detail}</div> : null}
+              <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 12 }}>
+                <span className={`vx-dot`} style={{ background: a.level === "crit" ? "var(--vx-crit)" : a.level === "warn" ? "var(--vx-caution)" : "var(--vx-blue)" }} />
+                <div>
+                  <div className="vx-alert-title">{a.title}</div>
+                  {a.detail ? <div style={{ color: "var(--vx-fg-dim)", fontSize: 12, fontFamily: "var(--vx-font-mono)" }}>{a.detail}</div> : null}
+                </div>
               </div>
               <button className="vx-btn" onClick={() => clearAlert(a.id)}>Dismiss</button>
             </div>
@@ -2148,10 +2527,10 @@ function WidgetFrame(props: {
     <div
       className="vx-widget vx-widget-outline"
       style={{
-        border: `1px solid ${def?.defaultTheme?.border ?? "rgba(255,255,255,0.16)"}`,
-        background: def?.defaultTheme?.bg ?? "rgba(255,255,255,0.06)",
-        boxShadow: "0 10px 30px rgba(0,0,0,0.45)",
-        opacity: enabled ? 1 : 0.35,
+        border: `1px solid var(--vx-line)`,
+        background: "linear-gradient(180deg, rgba(31,157,255,0.03), rgba(8,13,24,0.85))",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
+        opacity: enabled ? 1 : 0.3,
       }}
       title={enabled ? "" : def?.hardwareHint ?? "Missing required telemetry"}
     >
@@ -2171,10 +2550,10 @@ function WidgetFrame(props: {
           </div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="vx-btn" onClick={() => props.onPatchSettings({ view: "card" })} title="Card">123</button>
-              <button className="vx-btn" onClick={() => props.onPatchSettings({ view: "instrument" })} title="Instrument">🧭</button>
-              <button className="vx-btn" onClick={() => props.onPatchSettings({ view: "plot" })} title="Plot">📈</button>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button className={`vx-btn ${view === "card" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "card" })} title="Card view" style={{ padding: "6px 8px" }}>NUM</button>
+              <button className={`vx-btn ${view === "instrument" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "instrument" })} title="Instrument view" style={{ padding: "6px 8px" }}>GAUGE</button>
+              <button className={`vx-btn ${view === "plot" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "plot" })} title="Plot view" style={{ padding: "6px 8px" }}>PLOT</button>
             </div>
 
             <select

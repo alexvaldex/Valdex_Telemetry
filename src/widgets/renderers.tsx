@@ -18,6 +18,74 @@ function fmt(n: number | undefined, digits = 2): string {
   return n.toFixed(digits);
 }
 
+/** --------- shared instrument primitives --------- */
+function seriesStats(frames: TelemetryFrameV1[], key: string, xform?: (v: number) => number) {
+  let min = Infinity, max = -Infinity, n = 0;
+  for (const f of frames) {
+    const raw = (f as any)[key];
+    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+    const v = xform ? xform(raw) : raw;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    n++;
+  }
+  return n ? { min, max } : null;
+}
+
+function BigReadout(props: {
+  value: string;
+  unit: string;
+  accent?: string;
+  sub?: React.ReactNode;
+  stats?: { min: number; max: number } | null;
+  statFmt?: (v: number) => string;
+}) {
+  const sf = props.statFmt ?? ((v: number) => v.toFixed(0));
+  return (
+    <div style={{ display: "grid", gap: 10, height: "100%", alignContent: "center" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <span
+          style={{
+            fontFamily: "var(--vx-font-mono)",
+            fontVariantNumeric: "tabular-nums",
+            fontWeight: 800,
+            fontSize: 46,
+            lineHeight: 1,
+            color: props.accent ?? "var(--vx-fg)",
+          }}
+        >
+          {props.value}
+        </span>
+        <span style={{ fontSize: 15, color: "var(--vx-fg-dim)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          {props.unit}
+        </span>
+      </div>
+
+      {props.stats ? (
+        <div style={{ display: "flex", gap: 16, fontSize: 11 }}>
+          <span style={{ color: "var(--vx-fg-dim)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
+            MIN <b style={{ fontFamily: "var(--vx-font-mono)", color: "var(--vx-fg)" }}>{sf(props.stats.min)}</b>
+          </span>
+          <span style={{ color: "var(--vx-fg-dim)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
+            PK <b style={{ fontFamily: "var(--vx-font-mono)", color: "var(--vx-blue-bright)" }}>{sf(props.stats.max)}</b>
+          </span>
+        </div>
+      ) : null}
+
+      {props.sub ? <div style={{ fontSize: 11, color: "var(--vx-fg-dim)", letterSpacing: "0.06em" }}>{props.sub}</div> : null}
+    </div>
+  );
+}
+
+function GaugeBar(props: { pct: number; accent?: string }) {
+  const pct = Math.max(0, Math.min(1, props.pct));
+  return (
+    <div style={{ height: 10, borderRadius: 2, border: "1px solid var(--vx-line)", background: "rgba(0,0,0,0.35)", overflow: "hidden" }}>
+      <div style={{ width: `${pct * 100}%`, height: "100%", background: props.accent ?? "var(--vx-blue)", boxShadow: "0 0 10px var(--vx-blue-glow)" }} />
+    </div>
+  );
+}
+
 /** --------- plotting (simple SVG) --------- */
 function PlotLine(props: {
   frames: TelemetryFrameV1[];
@@ -59,24 +127,24 @@ function PlotLine(props: {
   }, [props.frames, props.yKey, props.transformY]);
 
   return (
-    <div style={{ borderRadius: 12, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(0,0,0,0.12)", padding: 10 }}>
+    <div style={{ borderRadius: 3, border: "1px solid var(--vx-line)", background: "rgba(4,7,14,0.6)", padding: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-        <div style={{ fontWeight: 900 }}>{props.yLabel}</div>
+        <div className="vx-label">{props.yLabel}</div>
         {points ? (
-          <div style={{ fontSize: 12, opacity: 0.8 }}>
-            min {points.yMin.toFixed(2)} / max {points.yMax.toFixed(2)}
+          <div style={{ fontSize: 11, color: "var(--vx-fg-dim)", fontFamily: "var(--vx-font-mono)" }}>
+            {points.yMin.toFixed(1)} / {points.yMax.toFixed(1)}
           </div>
         ) : (
-          <div style={{ fontSize: 12, opacity: 0.6 }}>no data</div>
+          <div style={{ fontSize: 11, color: "var(--vx-fg-faint)" }}>NO DATA</div>
         )}
       </div>
 
-      <svg viewBox="0 0 1000 1000" width="100%" height={h} style={{ display: "block" }}>
+      <svg viewBox="0 0 1000 1000" width="100%" height={h} preserveAspectRatio="none" style={{ display: "block" }}>
         <path
           d={points?.path ?? ""}
           fill="none"
-          stroke={props.color ?? "rgba(122,162,255,0.95)"}
-          strokeWidth={10}
+          stroke={props.color ?? "var(--vx-blue-bright)"}
+          strokeWidth={8}
           strokeLinejoin="round"
           strokeLinecap="round"
           opacity={0.95}
@@ -261,26 +329,24 @@ export function renderWidget(args: {
     }
 
     if (view === "instrument") {
-      // simple tape-style
       const value = typeof v === "number" ? v : NaN;
       const pct = Number.isFinite(value) ? Math.max(0, Math.min(1, value / (unitSystem === "imperial" ? 5000 : 1500))) : 0;
       return (
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(v, 0)} <span style={{ fontSize: 16, opacity: 0.8 }}>{u}</span></div>
-          <div style={{ height: 14, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(0,0,0,0.10)" }}>
-            <div style={{ width: `${pct * 100}%`, height: "100%", borderRadius: 999, background: "rgba(122,162,255,0.9)" }} />
-          </div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>Tape scales to ~{unitSystem === "imperial" ? "5000ft" : "1500m"}.</div>
+        <div style={{ display: "grid", gap: 12, alignContent: "center", height: "100%" }}>
+          <BigReadout value={fmt(v, 0)} unit={u} />
+          <GaugeBar pct={pct} />
+          <div className="vx-label">Full scale ~{unitSystem === "imperial" ? "5000 ft" : "1500 m"}</div>
         </div>
       );
     }
 
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>Altitude</div>
-        <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(v, 1)} <span style={{ fontSize: 16, opacity: 0.8 }}>{u}</span></div>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>t={fmt(latest?.t_ms, 0)} ms</div>
-      </div>
+      <BigReadout
+        value={fmt(v, 1)}
+        unit={u}
+        stats={seriesStats(frames, "alt_m", (m) => (unitSystem === "imperial" ? mToFt(m) : m))}
+        sub={`MET ${fmt(latest?.t_ms, 0)} ms`}
+      />
     );
   }
 
@@ -297,23 +363,25 @@ export function renderWidget(args: {
       const value = typeof v === "number" ? v : NaN;
       const max = unitSystem === "imperial" ? 2000 : 600;
       const pct = Number.isFinite(value) ? Math.max(0, Math.min(1, Math.abs(value) / max)) : 0;
+      const accent = Number.isFinite(value) && value < 0 ? "var(--vx-caution)" : "var(--vx-blue-bright)";
       return (
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(v, 1)} <span style={{ fontSize: 16, opacity: 0.8 }}>{u}</span></div>
-          <div style={{ height: 14, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(0,0,0,0.10)" }}>
-            <div style={{ width: `${pct * 100}%`, height: "100%", borderRadius: 999, background: "rgba(122,162,255,0.9)" }} />
-          </div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>Magnitude scaled to ~{max} {u}.</div>
+        <div style={{ display: "grid", gap: 12, alignContent: "center", height: "100%" }}>
+          <BigReadout value={fmt(v, 1)} unit={u} accent={accent} />
+          <GaugeBar pct={pct} accent={accent} />
+          <div className="vx-label">Full scale ~{max} {u}</div>
         </div>
       );
     }
 
+    const ascending = typeof vel === "number" && vel >= 0;
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>Velocity</div>
-        <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(v, 1)} <span style={{ fontSize: 16, opacity: 0.8 }}>{u}</span></div>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>Positive up; negative down.</div>
-      </div>
+      <BigReadout
+        value={fmt(v, 1)}
+        unit={u}
+        accent={typeof vel === "number" ? (ascending ? "var(--vx-fg)" : "var(--vx-caution)") : undefined}
+        stats={seriesStats(frames, "vel_mps", (mps) => (unitSystem === "imperial" ? mpsToFps(mps) : mps))}
+        sub={typeof vel === "number" ? (ascending ? "▲ ASCENDING" : "▼ DESCENDING") : "+ up / − down"}
+      />
     );
   }
 
@@ -327,23 +395,24 @@ export function renderWidget(args: {
     if (view === "instrument") {
       const v = typeof bv === "number" ? bv : NaN;
       const pct = Number.isFinite(v) ? Math.max(0, Math.min(1, (v - 3.2) / (4.2 - 3.2))) : 0;
+      const accent = pct < 0.15 ? "var(--vx-crit)" : pct < 0.35 ? "var(--vx-caution)" : "var(--vx-go)";
       return (
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(bv, 2)} <span style={{ fontSize: 16, opacity: 0.8 }}>V</span></div>
-          <div style={{ height: 14, borderRadius: 999, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(0,0,0,0.10)" }}>
-            <div style={{ width: `${pct * 100}%`, height: "100%", borderRadius: 999, background: "rgba(122,162,255,0.9)" }} />
-          </div>
-          <div style={{ fontSize: 12, opacity: 0.75 }}>Gauge assumes ~1-cell range (3.2–4.2V). Your App settings do real %.</div>
+        <div style={{ display: "grid", gap: 12, alignContent: "center", height: "100%" }}>
+          <BigReadout value={fmt(bv, 2)} unit="V" accent={accent} />
+          <GaugeBar pct={pct} accent={accent} />
+          <div className="vx-label">Per-cell scale 3.2–4.2 V · Settings for pack %</div>
         </div>
       );
     }
 
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>Battery</div>
-        <div style={{ fontWeight: 900, fontSize: 34 }}>{fmt(bv, 2)} <span style={{ fontSize: 16, opacity: 0.8 }}>V</span></div>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>Use battery profile in Settings for % + alerts.</div>
-      </div>
+      <BigReadout
+        value={fmt(bv, 2)}
+        unit="V"
+        stats={seriesStats(frames, "batt_v")}
+        statFmt={(x) => x.toFixed(2)}
+        sub="Set battery profile in Settings for pack % + alerts"
+      />
     );
   }
 
@@ -459,22 +528,38 @@ export function renderWidget(args: {
 
   // Minimal placeholders for GPS/IMU/raw (raw is handled specially in App.tsx)
   if (widgetId === "gps.map") {
+    const fix = latest?.gps_fix;
+    const sats = latest?.gps_sats;
+    const fixState = typeof fix === "number" ? (fix >= 3 ? "var(--vx-go)" : fix >= 1 ? "var(--vx-caution)" : "var(--vx-crit)") : "var(--vx-fg-faint)";
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontWeight: 900 }}>GPS</div>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>lat {fmt(latest?.lat, 6)} / lon {fmt(latest?.lon, 6)}</div>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>fix {latest?.gps_fix ?? "—"} / sats {latest?.gps_sats ?? "—"}</div>
-        <div style={{ fontSize: 12, opacity: 0.65 }}>Map widget can be upgraded later (Leaflet/Mapbox).</div>
+      <div style={{ display: "grid", gap: 12, height: "100%", alignContent: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <StatTile label="LATITUDE" value={fmt(latest?.lat, 6)} unit="°" />
+          <StatTile label="LONGITUDE" value={fmt(latest?.lon, 6)} unit="°" />
+          <StatTile label="FIX" value={fix !== undefined ? String(fix) : "—"} accent={fixState} />
+          <StatTile label="SATS" value={sats !== undefined ? String(sats) : "—"} />
+        </div>
+        <div className="vx-label">Map view (Leaflet/Mapbox) planned for a later milestone</div>
       </div>
     );
   }
 
   if (widgetId === "imu.card") {
+    const accMag =
+      typeof latest?.ax === "number" && typeof latest?.ay === "number" && typeof latest?.az === "number"
+        ? Math.sqrt(latest.ax ** 2 + latest.ay ** 2 + latest.az ** 2) / 9.80665
+        : undefined;
     return (
-      <div style={{ display: "grid", gap: 8 }}>
-        <div style={{ fontWeight: 900 }}>IMU</div>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>acc (x,y,z): {fmt(latest?.ax, 2)} {fmt(latest?.ay, 2)} {fmt(latest?.az, 2)}</div>
-        <div style={{ fontSize: 12, opacity: 0.8 }}>gyro (x,y,z): {fmt(latest?.gx, 2)} {fmt(latest?.gy, 2)} {fmt(latest?.gz, 2)}</div>
+      <div style={{ display: "grid", gap: 12, height: "100%", alignContent: "start" }}>
+        <BigReadout value={accMag !== undefined ? accMag.toFixed(2) : "—"} unit="g total" accent="var(--vx-blue-bright)" />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+          <StatTile label="AX" value={fmt(latest?.ax, 2)} />
+          <StatTile label="AY" value={fmt(latest?.ay, 2)} />
+          <StatTile label="AZ" value={fmt(latest?.az, 2)} />
+          <StatTile label="GX" value={fmt(latest?.gx, 2)} />
+          <StatTile label="GY" value={fmt(latest?.gy, 2)} />
+          <StatTile label="GZ" value={fmt(latest?.gz, 2)} />
+        </div>
       </div>
     );
   }
@@ -482,6 +567,18 @@ export function renderWidget(args: {
   return (
     <div style={{ fontSize: 12, opacity: 0.75 }}>
       No renderer for <code>{widgetId}</code>
+    </div>
+  );
+}
+
+function StatTile(props: { label: string; value: string; unit?: string; accent?: string }) {
+  return (
+    <div style={{ border: "1px solid var(--vx-line)", borderRadius: 3, background: "rgba(10,16,30,0.5)", padding: "8px 10px", display: "grid", gap: 4 }}>
+      <span className="vx-label" style={{ fontSize: 9 }}>{props.label}</span>
+      <span style={{ fontFamily: "var(--vx-font-mono)", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 18, color: props.accent ?? "var(--vx-fg)" }}>
+        {props.value}
+        {props.unit ? <span style={{ fontSize: 11, color: "var(--vx-fg-dim)", marginLeft: 2 }}>{props.unit}</span> : null}
+      </span>
     </div>
   );
 }

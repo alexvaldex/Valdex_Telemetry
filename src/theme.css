@@ -1,0 +1,133 @@
+/* ============================================================
+   VX Telemetry — Mission Control design foundation
+   Dark, high-contrast, technical. SpaceX-launch-console feel.
+   ============================================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap");
+
+:root {
+  /* Core palette */
+  --vx-bg0: #04060c;          /* deepest background */
+  --vx-bg1: #070b14;          /* shell background */
+  --vx-bg2: #0b1220;          /* panel background */
+  --vx-panel: rgba(10, 16, 30, 0.72);
+  --vx-panel-solid: #0a1020;
+
+  /* Lines / structure */
+  --vx-line: rgba(100, 150, 230, 0.16);
+  --vx-line-strong: rgba(120, 175, 255, 0.34);
+  --vx-grid: rgba(90, 140, 220, 0.06);
+
+  /* Text */
+  --vx-fg: #d9e3f7;
+  --vx-fg-dim: #7e8db0;
+  --vx-fg-faint: #4a5878;
+
+  /* Signal colors */
+  --vx-blue: #1f9dff;
+  --vx-blue-bright: #57c1ff;
+  --vx-blue-glow: rgba(31, 157, 255, 0.35);
+  --vx-go: #24e08a;
+  --vx-go-glow: rgba(36, 224, 138, 0.35);
+  --vx-caution: #ffb02e;
+  --vx-caution-glow: rgba(255, 176, 46, 0.35);
+  --vx-crit: #ff3b47;
+  --vx-crit-glow: rgba(255, 59, 71, 0.4);
+
+  /* Type */
+  --vx-font-display: "Chakra Petch", "Rajdhani", system-ui, sans-serif;
+  --vx-font-mono: "JetBrains Mono", "Roboto Mono", ui-monospace, monospace;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--vx-bg0);
+}
+
+body {
+  color: var(--vx-fg);
+  font-family: var(--vx-font-display);
+  /* Layered starfield-ish deep-space backdrop */
+  background:
+    radial-gradient(1200px 700px at 15% -10%, rgba(31, 157, 255, 0.08), transparent 60%),
+    radial-gradient(1000px 800px at 110% 10%, rgba(36, 224, 138, 0.05), transparent 55%),
+    linear-gradient(180deg, #05070e 0%, #04060c 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Faint technical grid overlay on the whole app */
+#root::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--vx-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--vx-grid) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 40%, transparent 100%);
+}
+
+/* Numeric / telemetry values should always be mono + tabular */
+.vx-num {
+  font-family: var(--vx-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
+}
+
+/* Uppercase technical label */
+.vx-label {
+  font-family: var(--vx-font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vx-fg-dim);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 175, 255, 0.18);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 175, 255, 0.3);
+  background-clip: padding-box;
+}
+
+/* Blinking live indicator */
+@keyframes vx-blink {
+  0%, 55% { opacity: 1; }
+  56%, 100% { opacity: 0.25; }
+}
+.vx-live-dot {
+  animation: vx-blink 1.2s steps(1, end) infinite;
+}
+
+/* Soft pulse for critical states */
+@keyframes vx-pulse-crit {
+  0%, 100% { box-shadow: 0 0 0 0 var(--vx-crit-glow); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
