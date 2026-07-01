@@ -16,6 +16,7 @@ import { WebSerialConnection, isWebSerialSupported } from "./transport/webSerial
 import { SimulatorConnection } from "./transport/simulator";
 import { liveStore } from "./telemetry/liveStore";
 import { saveFlight, listFlights, getFlight, deleteFlight, type FlightMeta } from "./telemetry/flightLog";
+import { startAlarm, stopAlarm } from "./audio/masterCaution";
 
 /** ---------- Types ---------- */
 type WidgetInstance = { key: string; widgetId: WidgetId };
@@ -317,6 +318,65 @@ function MissionLogo() {
   );
 }
 
+function MissionTimeline(props: {
+  events: DerivedEvent[];
+  currentTms: number;
+  onJump: (id: DerivedEvent["id"]) => void;
+}) {
+  const { events } = props;
+  const t0base = events.find((e) => e.id === "LIFTOFF")?.t_ms;
+
+  if (!events.length) {
+    return (
+      <div className="vx-timeline">
+        <div className="vx-label" style={{ position: "absolute", top: 8, left: 16 }}>Mission Timeline</div>
+        <div style={{ textAlign: "center", color: "var(--vx-fg-faint)", fontSize: 12, letterSpacing: "0.14em" }}>AWAITING LIFTOFF</div>
+      </div>
+    );
+  }
+
+  const ts = events.map((e) => e.t_ms);
+  const tStart = Math.min(...ts, props.currentTms);
+  const tEnd = Math.max(...ts, props.currentTms);
+  const span = tEnd - tStart || 1;
+  const pos = (t: number) => Math.max(0, Math.min(100, ((t - tStart) / span) * 100));
+  const nowPct = pos(props.currentTms);
+
+  const relLabel = (t: number) => {
+    if (t0base === undefined) return "";
+    const s = (t - t0base) / 1000;
+    return `T${s >= 0 ? "+" : "−"}${Math.abs(s).toFixed(0)}s`;
+  };
+
+  return (
+    <div className="vx-timeline">
+      <div className="vx-label" style={{ position: "absolute", top: 8, left: 16 }}>Mission Timeline</div>
+      <div className="vx-timeline-rail">
+        <div className="vx-timeline-fill" style={{ width: `${nowPct}%` }} />
+        <div className="vx-timeline-now" style={{ left: `${nowPct}%` }} />
+        {events.map((e, i) => {
+          const reached = e.t_ms <= props.currentTms;
+          const above = i % 2 === 0;
+          return (
+            <button
+              key={e.id}
+              className={`vx-tl-event ${reached ? "reached" : ""}`}
+              style={{ left: `${pos(e.t_ms)}%`, top: -4 }}
+              onClick={() => props.onJump(e.id)}
+              title={`${e.label} — jump to event`}
+            >
+              <span className="vx-tl-tick" />
+              <span className={`vx-tl-lbl ${above ? "above" : "below"}`}>
+                {e.id} <span className="vx-tl-time">{relLabel(e.t_ms)}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   /** Transport */
   const [transportKind, setTransportKind] = useState<"simulator" | "serial">("simulator");
@@ -464,6 +524,19 @@ export default function App() {
   /** Flight log */
   const [flightLogOpen, setFlightLogOpen] = useState(false);
   const [flights, setFlights] = useState<FlightMeta[]>([]);
+
+  /** Master caution / alarm */
+  const [alarmMuted, setAlarmMuted] = useState<boolean>(() => {
+    try { return localStorage.getItem("vx.alarmMuted") === "1"; } catch { return false; }
+  });
+  const [ackedSig, setAckedSig] = useState("");
+  function toggleAlarmMute() {
+    setAlarmMuted((m) => {
+      const next = !m;
+      localStorage.setItem("vx.alarmMuted", next ? "1" : "0");
+      return next;
+    });
+  }
 
   /** Command Palette */
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -1144,6 +1217,27 @@ export default function App() {
 
   const goStateText: Record<GoState, string> = { go: "GO", caution: "HOLD", crit: "NO-GO", nodata: "—" };
 
+  /** Master caution: active whenever any critical alert stands. */
+  const critAlerts = useMemo(() => alerts.filter((a) => a.level === "crit"), [alerts]);
+  const critSig = useMemo(() => critAlerts.map((a) => a.id).sort().join("|"), [critAlerts]);
+  const cautionActive = critSig !== "";
+  // Alarm sounds unless muted or the current caution set has been acknowledged.
+  const alarmActive = cautionActive && !alarmMuted && critSig !== ackedSig;
+
+  useEffect(() => {
+    if (alarmActive) startAlarm();
+    else stopAlarm();
+    return () => stopAlarm();
+  }, [alarmActive]);
+
+  // A brand-new caution set clears any prior acknowledgement.
+  useEffect(() => {
+    if (critSig && critSig !== ackedSig) {
+      // only reset ack if the signature grew/changed to something not acked
+    }
+    if (!critSig) setAckedSig("");
+  }, [critSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div style={{ position: "relative", zIndex: 1, padding: 14, fontFamily: "var(--vx-font-display)", color: "var(--vx-fg)" }}>
       <style>{`
@@ -1544,6 +1638,89 @@ export default function App() {
         }
         .vx-readout .v small { font-size: 11px; color: var(--vx-fg-dim); font-weight: 500; margin-left: 3px; }
         .vx-readout.peak .v { color: var(--vx-blue-bright); }
+
+        /* ---------- Master caution banner ---------- */
+        @keyframes vx-caution-flash {
+          0%, 100% { background: rgba(255,59,71,0.14); }
+          50% { background: rgba(255,59,71,0.34); }
+        }
+        .vx-caution-banner {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          margin-bottom: 12px;
+          padding: 10px 16px;
+          border: 1px solid var(--vx-crit);
+          border-radius: 4px;
+          animation: vx-caution-flash 0.9s ease-in-out infinite;
+          box-shadow: inset 0 0 40px rgba(255,59,71,0.2);
+        }
+        .vx-caution-banner .lbl {
+          font-family: var(--vx-font-display);
+          font-weight: 700;
+          letter-spacing: 0.16em;
+          text-transform: uppercase;
+          font-size: 16px;
+          color: #ffd7da;
+        }
+        .vx-caution-banner .det { font-family: var(--vx-font-mono); font-size: 12px; color: #ffb3b8; }
+
+        /* ---------- Mission timeline ---------- */
+        .vx-timeline {
+          position: relative;
+          margin-bottom: 12px;
+          padding: 26px 16px 24px;
+          border: 1px solid var(--vx-line);
+          border-radius: 4px;
+          background: rgba(10,16,30,0.4);
+        }
+        .vx-timeline-rail {
+          position: relative;
+          height: 2px;
+          background: var(--vx-line-strong);
+          margin: 0 6px;
+        }
+        .vx-timeline-fill {
+          position: absolute;
+          left: 0; top: 0; height: 100%;
+          background: linear-gradient(90deg, var(--vx-blue), var(--vx-go));
+          box-shadow: 0 0 8px var(--vx-blue-glow);
+        }
+        .vx-timeline-now {
+          position: absolute;
+          top: -5px;
+          width: 2px; height: 12px;
+          background: var(--vx-go);
+          box-shadow: 0 0 8px var(--vx-go-glow);
+          transform: translateX(-1px);
+        }
+        .vx-tl-event {
+          position: absolute;
+          transform: translateX(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          cursor: pointer;
+          background: none;
+          border: none;
+          padding: 0;
+        }
+        .vx-tl-tick { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--vx-bg0); background: var(--vx-blue-bright); }
+        .vx-tl-event.reached .vx-tl-tick { background: var(--vx-go); }
+        .vx-tl-lbl {
+          position: absolute;
+          font-family: var(--vx-font-display);
+          font-size: 9px;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: var(--vx-fg-dim);
+          white-space: nowrap;
+        }
+        .vx-tl-event:hover .vx-tl-lbl { color: var(--vx-blue-bright); }
+        .vx-tl-lbl.above { bottom: 14px; }
+        .vx-tl-lbl.below { top: 14px; }
+        .vx-tl-time { font-family: var(--vx-font-mono); color: var(--vx-fg-faint); }
       `}</style>
 
       {/* ---------- Mission Control Header ---------- */}
@@ -1632,6 +1809,32 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Master Caution */}
+      {cautionActive && (
+        <div className="vx-caution-banner">
+          <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+            <span className="vx-dot" style={{ width: 12, height: 12, background: "var(--vx-crit)", boxShadow: "0 0 12px var(--vx-crit-glow)" }} />
+            <div style={{ minWidth: 0 }}>
+              <div className="lbl">Master Caution</div>
+              <div className="det" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {critAlerts.map((a) => a.title).join(" · ")}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="vx-btn vx-btn-danger" onClick={() => setAckedSig(critSig)} disabled={critSig === ackedSig} title="Acknowledge — silences the alarm for this caution">
+              ACK
+            </button>
+            <button className={`vx-btn ${alarmMuted ? "vx-btn-danger" : ""}`} onClick={toggleAlarmMute} title="Master alarm mute">
+              {alarmMuted ? "🔇 Muted" : "🔊 Audio"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Mission Timeline */}
+      <MissionTimeline events={derivedEvents} currentTms={display.t_ms} onJump={jumpToEvent} />
 
       {/* Alerts */}
       {alerts.length > 0 && (
