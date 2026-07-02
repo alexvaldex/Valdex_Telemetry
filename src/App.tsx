@@ -1460,13 +1460,43 @@ ${trkpts}
     };
   }, [display.frames]);
 
-  // Predicted apogee during ascent: h + v²/2g (drag-free ballistic floor).
+  // Predicted apogee during ascent. During coast we measure the actual total
+  // deceleration (gravity + drag) from the last ~1 s of frames, which folds the
+  // vehicle's real drag into the estimate; during boost fall back to the
+  // drag-free ballistic floor h + v²/2g.
   const predApogeeM = useMemo(() => {
     if (flightPhase !== "BOOST" && flightPhase !== "COAST") return undefined;
     const alt = display.latest?.alt_m;
     const vel = display.latest?.vel_mps;
     if (typeof alt !== "number" || typeof vel !== "number" || vel <= 0) return undefined;
-    return alt + (vel * vel) / (2 * 9.80665);
+
+    let decel = 9.80665;
+    if (flightPhase === "COAST") {
+      const fr = display.frames;
+      const recent: Array<{ v: number; t: number }> = [];
+      for (let i = Math.max(0, fr.length - 25); i < fr.length; i++) {
+        const f = fr[i];
+        if (typeof f.vel_mps === "number" && typeof f.t_ms === "number") recent.push({ v: f.vel_mps, t: f.t_ms });
+      }
+      if (recent.length >= 2) {
+        const dv = recent[recent.length - 1].v - recent[0].v;
+        const dt = (recent[recent.length - 1].t - recent[0].t) / 1000;
+        if (dt > 0.2) {
+          const a = -dv / dt;
+          if (Number.isFinite(a) && a > 9.80665) decel = a; // drag can only add to gravity
+        }
+      }
+    }
+    return alt + (vel * vel) / (2 * decel);
+  }, [flightPhase, display.latest, display.frames]);
+
+  // Touchdown ETA while descending under canopy.
+  const touchdownEtaS = useMemo(() => {
+    if (flightPhase !== "DROGUE" && flightPhase !== "MAIN") return undefined;
+    const alt = display.latest?.alt_m;
+    const vel = display.latest?.vel_mps;
+    if (typeof alt !== "number" || typeof vel !== "number" || vel >= -0.5 || alt <= 0) return undefined;
+    return alt / -vel;
   }, [flightPhase, display.latest]);
 
   // GO / NO-GO readiness board.
@@ -2157,6 +2187,12 @@ ${trkpts}
             <Readout k="VEL" v={fmtUnit(display.latest?.vel_mps, globalUnits, "vel")} />
             {predApogeeM !== undefined ? (
               <Readout k="PRED AP" peak v={fmtUnit(predApogeeM, globalUnits, "alt")} />
+            ) : touchdownEtaS !== undefined ? (
+              <Readout
+                k="TD ETA"
+                peak
+                v={{ value: `${Math.floor(touchdownEtaS / 60)}:${String(Math.floor(touchdownEtaS % 60)).padStart(2, "0")}`, unit: "min" }}
+              />
             ) : (
               <Readout k="APOGEE" peak v={fmtUnit(peaks.apogeeM, globalUnits, "alt")} />
             )}

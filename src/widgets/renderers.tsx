@@ -520,13 +520,25 @@ export function renderWidget(args: {
     }
 
     const ascending = typeof vel === "number" && vel >= 0;
+    // Mach from local speed of sound: a = sqrt(γ·R·T), T from onboard temp when present.
+    const tempC = typeof latest?.temp_c === "number" ? latest.temp_c : 15;
+    const mach = typeof vel === "number" ? Math.abs(vel) / Math.sqrt(1.4 * 287.05 * (tempC + 273.15)) : undefined;
+    const dirText = typeof vel === "number" ? (ascending ? "▲ ASCENDING" : "▼ DESCENDING") : "+ up / − down";
     return (
       <BigReadout
         value={fmt(v, 1)}
         unit={u}
         accent={typeof vel === "number" ? (ascending ? "var(--vx-fg)" : "var(--vx-caution)") : undefined}
         stats={seriesStats(frames, "vel_mps", (mps) => (unitSystem === "imperial" ? mpsToFps(mps) : mps))}
-        sub={typeof vel === "number" ? (ascending ? "▲ ASCENDING" : "▼ DESCENDING") : "+ up / − down"}
+        sub={
+          mach !== undefined && mach >= 0.3 ? (
+            <span>
+              {dirText} · <b style={{ color: mach >= 1 ? "var(--vx-caution)" : "var(--vx-blue-bright)", fontFamily: "var(--vx-font-mono)" }}>MACH {mach.toFixed(2)}</b>
+            </span>
+          ) : (
+            dirText
+          )
+        }
       />
     );
   }
