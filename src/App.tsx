@@ -17,6 +17,16 @@ import { SimulatorConnection } from "./transport/simulator";
 import { liveStore } from "./telemetry/liveStore";
 import { saveFlight, listFlights, getFlight, deleteFlight, type FlightMeta } from "./telemetry/flightLog";
 import { startAlarm, stopAlarm } from "./audio/masterCaution";
+import {
+  getRocketConfig,
+  saveRocketConfig,
+  saveVehicleModel,
+  getVehicleModel,
+  deleteVehicleModel,
+  type RocketConfig,
+  type StageRole,
+} from "./telemetry/vehicleStore";
+import type { Model3D, UpAxis } from "./widgets/rocketModel";
 
 /** ---------- Types ---------- */
 type WidgetInstance = { key: string; widgetId: WidgetId };
@@ -61,12 +71,6 @@ type ThemeSettings = {
   consoleBg: string; // raw console background
 };
 
-type Model3D = {
-  name: string;
-  mime: string;
-  dataUrl: string; // base64 data url
-  uploadedAt: number;
-};
 
 /** ---------- Defaults / presets ---------- */
 const DEFAULT_THEME: ThemeSettings = { bgA: "#060b16", bgB: "#04070e", consoleBg: "#03060d" };
@@ -491,20 +495,8 @@ export default function App() {
     localStorage.setItem("vx.theme", JSON.stringify(DEFAULT_THEME));
   }
 
-  /** 3D model upload storage (NEW) */
-  const [model3d, setModel3d] = useState<Model3D | null>(() => {
-    try {
-      const saved = localStorage.getItem("vx.model3d");
-      return saved ? (JSON.parse(saved) as Model3D) : null;
-    } catch {
-      return null;
-    }
-  });
-  function saveModel3D(m: Model3D | null) {
-    setModel3d(m);
-    if (m) localStorage.setItem("vx.model3d", JSON.stringify(m));
-    else localStorage.removeItem("vx.model3d");
-  }
+  /** Vehicle (3D model + flight config) modal */
+  const [vehicleOpen, setVehicleOpen] = useState(false);
 
   const fg = useMemo(() => autoTextColor(theme.bgB), [theme.bgB]);
   const chipFg = useMemo(() => autoTextColor("#1b2339"), []); // stable
@@ -1831,6 +1823,7 @@ export default function App() {
               {flightMode ? "◆ Flight (Locked)" : "◇ Build Mode"}
             </button>
 
+            <button className="vx-btn" onClick={() => setVehicleOpen(true)} title="Vehicle setup — upload rocket CAD, staging & recovery">🚀 Vehicle</button>
             <button className="vx-btn" onClick={() => setSettingsOpen(true)} title="Settings">Settings</button>
             <button className="vx-btn" onClick={() => setPaletteOpen(true)} title="Command Palette (Ctrl+K)">⌘K</button>
           </div>
@@ -2067,7 +2060,6 @@ export default function App() {
                 settings={widgetSettings[inst.key]}
                 locked={!isLayoutEditable} // locked in flight + playback
                 theme={theme}
-                model3d={model3d}
                 onPatchSettings={(patch) => saveWidgetSettings(inst.key, patch)}
                 onResetAccent={() => resetWidgetAccent(inst.key)}
                 onRemove={() => removeWidget(inst.key)}
@@ -2131,7 +2123,6 @@ export default function App() {
           theme={theme}
           battProfile={battProfile}
           globalUnits={globalUnits}
-          model3d={model3d}
           onClose={() => setSettingsOpen(false)}
           onTheme={(p) => saveTheme(p)}
           onThemePreset={(t) => {
@@ -2141,9 +2132,11 @@ export default function App() {
           onThemeReset={resetTheme}
           onBatt={(p) => saveBattProfile(p)}
           onUnits={(u) => saveGlobalUnits(u)}
-          onModel3D={saveModel3D}
         />
       )}
+
+      {/* Vehicle Modal */}
+      {vehicleOpen && <VehicleModal onClose={() => setVehicleOpen(false)} />}
 
       {/* Command Palette */}
       {paletteOpen && (
@@ -2327,44 +2320,176 @@ function ContextMenu(props: {
   );
 }
 
+/** ---------- VehicleModal — CAD upload + flight configuration ---------- */
+function VehicleModal(props: { onClose: () => void }) {
+  const [cfg, setCfg] = useState<RocketConfig>(() => getRocketConfig());
+  const [sustainerName, setSustainerName] = useState<string | null>(null);
+  const [boosterName, setBoosterName] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string>("");
+
+  async function refreshModels() {
+    const [s, b] = await Promise.all([getVehicleModel("sustainer"), getVehicleModel("booster")]);
+    setSustainerName(s?.name ?? null);
+    setBoosterName(b?.name ?? null);
+  }
+  useEffect(() => { refreshModels(); }, []);
+
+  function update(patch: Partial<RocketConfig>) {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    saveRocketConfig(next);
+  }
+
+  async function upload(role: StageRole, file: File) {
+    setBusy(`Reading ${file.name}…`);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onerror = () => reject(new Error("read failed"));
+        r.onload = () => resolve(String(r.result));
+        r.readAsDataURL(file);
+      });
+      const model: Model3D = { name: file.name, mime: file.type || "application/octet-stream", dataUrl, uploadedAt: Date.now() };
+      await saveVehicleModel(role, model);
+      await refreshModels();
+      setBusy("");
+    } catch (e: any) {
+      setBusy(e?.message ?? "upload failed");
+    }
+  }
+
+  async function clearModel(role: StageRole) {
+    await deleteVehicleModel(role);
+    await refreshModels();
+  }
+
+  const UP_AXES: UpAxis[] = ["y", "-y", "z", "-z", "x", "-x"];
+
+  function ModelSlot({ role, name }: { role: StageRole; name: string | null }) {
+    const label = role === "sustainer" ? (cfg.stages === 2 ? "Sustainer (upper stage)" : "Airframe") : "Booster (lower stage)";
+    return (
+      <div className="vx-card" style={{ marginTop: 10 }}>
+        <div className="vx-label" style={{ marginBottom: 8 }}>{label}</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <label className="vx-btn vx-btn-primary" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            Upload CAD
+            <input
+              type="file"
+              accept=".glb,.gltf,.stl,.obj"
+              style={{ display: "none" }}
+              onChange={async (e) => { const f = e.target.files?.[0]; if (f) await upload(role, f); e.currentTarget.value = ""; }}
+            />
+          </label>
+          <button className="vx-btn vx-btn-danger" onClick={() => clearModel(role)} disabled={!name}>Clear</button>
+          <span style={{ fontSize: 12, fontFamily: "var(--vx-font-mono)", color: name ? "var(--vx-go)" : "var(--vx-fg-faint)" }}>
+            {name ?? "— procedural fallback —"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          width: "min(720px, 94vw)", maxHeight: "88vh", overflow: "auto",
+          background: "rgba(7,11,22,0.98)", border: "1px solid var(--vx-line-strong)",
+          borderRadius: 4, boxShadow: "0 22px 70px rgba(0,0,0,0.75)", padding: 20,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", fontSize: 15 }}>🚀 Vehicle Setup</div>
+          <button className="vx-xbtn" onClick={props.onClose}>×</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--vx-fg-dim)", lineHeight: 1.6, marginBottom: 12 }}>
+          Upload your rocket CAD and describe the flight. The 3D Vehicle widget flies your model live from telemetry
+          attitude and animates staging & recovery through the flight events.
+        </div>
+
+        {/* Name */}
+        <div className="vx-card">
+          <div className="vx-label" style={{ marginBottom: 6 }}>Vehicle name</div>
+          <input className="vx-input" value={cfg.name} onChange={(e) => update({ name: e.target.value })} />
+        </div>
+
+        {/* Stages */}
+        <div className="vx-card" style={{ marginTop: 10 }}>
+          <div className="vx-label" style={{ marginBottom: 8 }}>Configuration</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className={`vx-btn ${cfg.stages === 1 ? "vx-btn-primary" : ""}`} onClick={() => update({ stages: 1 })}>Single stage</button>
+            <button className={`vx-btn ${cfg.stages === 2 ? "vx-btn-primary" : ""}`} onClick={() => update({ stages: 2 })}>Two stage</button>
+          </div>
+
+          {cfg.stages === 2 && (
+            <div style={{ marginTop: 10 }}>
+              <div className="vx-label" style={{ marginBottom: 6 }}>Stage separation at</div>
+              <select className="vx-select" value={cfg.separationEvent} onChange={(e) => update({ separationEvent: e.target.value as any })}>
+                <option value="BURNOUT">Booster burnout (staging)</option>
+                <option value="APOGEE">Apogee</option>
+                <option value="NONE">No separation</option>
+              </select>
+            </div>
+          )}
+        </div>
+
+        {/* Recovery */}
+        <div className="vx-card" style={{ marginTop: 10 }}>
+          <div className="vx-label" style={{ marginBottom: 6 }}>Recovery</div>
+          <select className="vx-select" value={cfg.recovery} onChange={(e) => update({ recovery: e.target.value as any })}>
+            <option value="drogue-main">Dual deploy (drogue at apogee → main)</option>
+            <option value="main-only">Single deploy (main only)</option>
+            <option value="none">None / tumble</option>
+          </select>
+        </div>
+
+        {/* Model orientation + scale */}
+        <div className="vx-card" style={{ marginTop: 10 }}>
+          <div className="vx-label" style={{ marginBottom: 8 }}>Model orientation & size</div>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--vx-fg-dim)" }}>
+              NOSE (UP) AXIS
+              <select className="vx-select" value={cfg.upAxis} onChange={(e) => update({ upAxis: e.target.value as UpAxis })}>
+                {UP_AXES.map((a) => <option key={a} value={a}>+{a.toUpperCase()}</option>)}
+              </select>
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "var(--vx-fg-dim)", flex: 1, minWidth: 180 }}>
+              SIZE ×{cfg.modelScale.toFixed(2)}
+              <input type="range" min={0.3} max={3} step={0.05} value={cfg.modelScale} onChange={(e) => update({ modelScale: Number(e.target.value) })} />
+            </label>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--vx-fg-faint)", marginTop: 8 }}>
+            If your model lies on its side in the viewer, change the nose axis until it stands upright.
+          </div>
+        </div>
+
+        {/* Model uploads */}
+        <ModelSlot role="sustainer" name={sustainerName} />
+        {cfg.stages === 2 && <ModelSlot role="booster" name={boosterName} />}
+
+        <div style={{ marginTop: 12, fontSize: 11, color: busy ? "var(--vx-caution)" : "var(--vx-fg-faint)", fontFamily: "var(--vx-font-mono)" }}>
+          {busy || "Formats: .glb / .gltf (recommended), .stl, .obj · stored locally in your browser."}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** ---------- SettingsModal ---------- */
 function SettingsModal(props: {
   theme: ThemeSettings;
   battProfile: BatteryProfile;
   globalUnits: UnitSystem;
-  model3d: Model3D | null;
   onClose: () => void;
   onTheme: (patch: Partial<ThemeSettings>) => void;
   onThemePreset: (t: ThemeSettings) => void;
   onThemeReset: () => void;
   onBatt: (patch: Partial<BatteryProfile>) => void;
   onUnits: (u: UnitSystem) => void;
-  onModel3D: (m: Model3D | null) => void;
 }) {
   const fg = autoTextColor(props.theme.bgB);
-
-  async function uploadModel(file: File) {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onerror = () => reject(new Error("read failed"));
-      r.onload = () => resolve(String(r.result));
-      r.readAsDataURL(file);
-    });
-
-    const model: Model3D = {
-      name: file.name,
-      mime: file.type || "application/octet-stream",
-      dataUrl,
-      uploadedAt: Date.now(),
-    };
-
-    // localStorage size can be tight. if it fails, we keep UI stable.
-    try {
-      props.onModel3D(model);
-    } catch {
-      alert("Model too large to store locally. Use a smaller GLB or we’ll add IndexedDB storage next.");
-    }
-  }
 
   return (
     <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
@@ -2485,51 +2610,14 @@ function SettingsModal(props: {
           </div>
         </div>
 
-        {/* Right: 3D model */}
+        {/* Right: info */}
         <div className="vx-pane">
           <div className="vx-card">
-            <div style={{ fontWeight: 900, marginBottom: 8 }}>3D Vehicle Model</div>
-
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>3D Vehicle</div>
             <div style={{ fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
-              Upload a model to use in the 3D renderer (recommended: <code>.glb</code>).
-            </div>
-
-            <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <label className="vx-btn vx-btn-primary" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                Upload Model
-                <input
-                  type="file"
-                  accept=".glb,.gltf,.stl,.obj"
-                  style={{ display: "none" }}
-                  onChange={async (e) => {
-                    const f = e.target.files?.[0];
-                    if (f) await uploadModel(f);
-                    e.currentTarget.value = "";
-                  }}
-                />
-              </label>
-
-              <button className="vx-btn vx-btn-danger" onClick={() => props.onModel3D(null)} disabled={!props.model3d}>
-                Clear
-              </button>
-            </div>
-
-            <div style={{ marginTop: 10 }}>
-              {props.model3d ? (
-                <div className="vx-card" style={{ background: "rgba(255,255,255,0.04)" }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Current model</div>
-                  <div style={{ fontSize: 12, opacity: 0.85 }}>
-                    <div><code>{props.model3d.name}</code></div>
-                    <div style={{ marginTop: 6 }}>Stored key: <code>vx.model3d</code></div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ fontSize: 12, opacity: 0.75 }}>No model uploaded.</div>
-              )}
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
-              If your 3D widget isn’t using <code>vx.model3d</code> yet, tell me its widget id and I’ll wire it to load this automatically.
+              Upload your rocket CAD and set up staging / recovery from the{" "}
+              <b style={{ color: "var(--vx-blue-bright)" }}>VEHICLE</b> button in the top bar. The 3D Vehicle widget then
+              flies your model live from telemetry attitude, animating separation and chute deploy through the flight.
             </div>
           </div>
 
@@ -2863,7 +2951,6 @@ function WidgetFrame(props: {
   settings?: WidgetSettings;
   locked: boolean;
   theme: ThemeSettings;
-  model3d: Model3D | null;
   onPatchSettings: (patch: WidgetSettings) => void;
   onResetAccent: () => void;
   onRemove: () => void;
@@ -2888,13 +2975,6 @@ function WidgetFrame(props: {
     if (!el) return;
     if (rawPinnedTopRef.current) el.scrollTop = 0;
   }, [props.telemetry?.rawLines, props.widgetId]);
-
-  // Pass model3d via localStorage for widgets to consume if they want.
-  // Your 3D widget can read `vx.model3d`.
-  useEffect(() => {
-    // no-op: already stored by SettingsModal; this is just to keep the prop “used”.
-    void props.model3d;
-  }, [props.model3d]);
 
   const body = renderWidget({ widgetId: props.widgetId, latest: props.latest, telemetry: props.telemetry, unitSystem, view });
 

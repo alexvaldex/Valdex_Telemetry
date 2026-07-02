@@ -40,6 +40,7 @@ export class SimulatorConnection implements Connection {
   // Pyro continuity (1 = good/charge present, 0 = fired/open)
   private drogueCont: 0 | 1 = 1;
   private mainCont: 0 | 1 = 1;
+  private drogueEventSent = false;
 
   onLine(cb: (line: string) => void): () => void {
     this.lineListeners.add(cb);
@@ -70,6 +71,7 @@ export class SimulatorConnection implements Connection {
     this.posN = 0;
     this.drogueCont = 1;
     this.mainCont = 1;
+    this.drogueEventSent = false;
 
     this.setStatus("connected");
 
@@ -147,6 +149,11 @@ export class SimulatorConnection implements Connection {
         vel = DROGUE_VEL;
         alt = this.phaseStartAlt + DROGUE_VEL * dt;
         az = G;
+        // Emit a distinct DROGUE event ~1s after apogee (drogue canopy inflating).
+        if (!this.drogueEventSent && dt >= 1) {
+          this.drogueEventSent = true;
+          this.pendingEvent = "DROGUE";
+        }
         if (alt <= MAIN_DEPLOY_ALT_M) {
           alt = MAIN_DEPLOY_ALT_M;
           this.pendingEvent = "MAIN";

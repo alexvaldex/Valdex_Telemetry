@@ -7,7 +7,7 @@ import type { UnitSystem } from "../units";
 import { lazy, Suspense } from "react";
 
 // Heavy three.js viewer, code-split so it downloads only when a 3D widget shows.
-const Rocket3D = lazy(() => import("./Rocket3D"));
+const RocketViewer = lazy(() => import("./RocketViewer"));
 
 import { FlightSummaryWidget } from "./flightSummary";
 import { RangeMapWidget } from "./rangeMap";
@@ -540,7 +540,7 @@ export function renderWidget(args: {
           <div style={{ fontSize: 12, opacity: 0.75 }}>{q ? "LIVE orientation" : "Waiting for q_w/x/y/z"}</div>
         </div>
         <Suspense fallback={<div style={{ display: "grid", placeItems: "center", height: "100%", color: "var(--vx-fg-dim)", fontSize: 12, letterSpacing: "0.14em" }}>LOADING 3D…</div>}>
-          <Rocket3D q={q} />
+          <RocketViewer q={q} frames={frames} tMs={latest?.t_ms ?? 0} />
         </Suspense>
       </div>
     );
