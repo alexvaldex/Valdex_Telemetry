@@ -103,6 +103,22 @@ export class SimulatorConnection implements Connection {
     this.setStatus("disconnected");
   }
 
+  /** TX console support — the sim acknowledges commands like real firmware would. */
+  async write(line: string): Promise<void> {
+    const cmd = line.trim().toUpperCase();
+    setTimeout(() => {
+      if (this.status !== "connected") return;
+      if (cmd === "PING") this.emitRaw("# PONG");
+      else if (cmd === "STATUS") this.emitRaw(`# STATUS phase=${this.phase} batt=${this.battV.toFixed(2)}V alt=${this.lastAlt.toFixed(1)}m`);
+      else if (cmd === "VERSION") this.emitRaw("# VX-SIM firmware 1.0.0");
+      else this.emitRaw(`# ACK ${cmd}`);
+    }, 120);
+  }
+
+  private emitRaw(line: string) {
+    this.lineListeners.forEach((cb) => cb(line));
+  }
+
   private pendingEvent: string | undefined;
   private lastAlt = 0;
   private lastVel = 0;

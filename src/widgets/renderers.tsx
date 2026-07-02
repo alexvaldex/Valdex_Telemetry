@@ -176,14 +176,15 @@ function BigReadout(props: {
             fontFamily: "var(--vx-font-mono)",
             fontVariantNumeric: "tabular-nums",
             fontWeight: 800,
-            fontSize: 46,
+            // Scales with the widget (container query units), clamped for sanity.
+            fontSize: "clamp(26px, min(13cqw, 26cqh), 72px)",
             lineHeight: 1,
             color: props.accent ?? "var(--vx-fg)",
           }}
         >
           {props.value}
         </span>
-        <span style={{ fontSize: 15, color: "var(--vx-fg-dim)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+        <span style={{ fontSize: "clamp(11px, 4cqw, 16px)", color: "var(--vx-fg-dim)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
           {props.unit}
         </span>
       </div>
@@ -220,6 +221,7 @@ function PlotLine(props: {
   yLabel: string;
   color?: string;
   height?: number;
+  fill?: boolean; // fill the available height instead of a fixed px height
   transformY?: (v: number) => number;
 }) {
   const h = props.height ?? 160;
@@ -273,8 +275,13 @@ function PlotLine(props: {
   }, [props.frames, props.yKey, props.transformY]);
 
   return (
-    <div style={{ borderRadius: 3, border: "1px solid var(--vx-line)", background: "rgba(4,7,14,0.6)", padding: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+    <div
+      style={{
+        borderRadius: 3, border: "1px solid var(--vx-line)", background: "rgba(4,7,14,0.6)", padding: 10,
+        ...(props.fill ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : {}),
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flex: "0 0 auto" }}>
         <div className="vx-label">{props.yLabel}</div>
         {points ? (
           <div style={{ fontSize: 11, color: "var(--vx-fg-dim)", fontFamily: "var(--vx-font-mono)" }}>
@@ -285,8 +292,8 @@ function PlotLine(props: {
         )}
       </div>
 
-      <div style={{ position: "relative" }}>
-        <svg viewBox="0 0 1000 1000" width="100%" height={h} preserveAspectRatio="none" style={{ display: "block" }}>
+      <div style={{ position: "relative", ...(props.fill ? { flex: 1, minHeight: 60 } : {}) }}>
+        <svg viewBox="0 0 1000 1000" width="100%" height={props.fill ? "100%" : h} preserveAspectRatio="none" style={{ display: "block", ...(props.fill ? { position: "absolute", inset: 0 } : {}) }}>
           <path
             d={points?.path ?? ""}
             fill="none"
@@ -464,7 +471,7 @@ export function renderWidget(args: {
     const u = unitSystem === "imperial" ? "ft" : "m";
 
     if (view === "plot") {
-      return <PlotLine frames={frames} yKey="alt_m" yLabel={`Altitude (${u})`} transformY={(m) => (unitSystem === "imperial" ? mToFt(m) : m)} />;
+      return <PlotLine fill frames={frames} yKey="alt_m" yLabel={`Altitude (${u})`} transformY={(m) => (unitSystem === "imperial" ? mToFt(m) : m)} />;
     }
 
     if (view === "instrument") {
@@ -495,7 +502,7 @@ export function renderWidget(args: {
     const u = unitSystem === "imperial" ? "ft/s" : "m/s";
 
     if (view === "plot") {
-      return <PlotLine frames={frames} yKey="vel_mps" yLabel={`Velocity (${u})`} transformY={(mps) => (unitSystem === "imperial" ? mpsToFps(mps) : mps)} />;
+      return <PlotLine fill frames={frames} yKey="vel_mps" yLabel={`Velocity (${u})`} transformY={(mps) => (unitSystem === "imperial" ? mpsToFps(mps) : mps)} />;
     }
 
     if (view === "instrument") {
@@ -528,7 +535,7 @@ export function renderWidget(args: {
     const bv = latest?.batt_v;
 
     if (view === "plot") {
-      return <PlotLine frames={frames} yKey="batt_v" yLabel={`Battery (V)`} transformY={(v) => v} />;
+      return <PlotLine fill frames={frames} yKey="batt_v" yLabel={`Battery (V)`} transformY={(v) => v} />;
     }
 
     if (view === "instrument") {

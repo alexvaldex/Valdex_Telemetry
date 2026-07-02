@@ -1,13 +1,15 @@
 {
-  "name": "valdex-telemetry",
-  "version": "1.0.0",
-  "description": "",
+  "name": "vx-telemetry",
+  "productName": "VX Telemetry",
+  "version": "0.9.0",
+  "description": "Universal ground station for rocketry telemetry — live dashboard for altimeters, GPS, flight computers, and radios.",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "preview": "vite preview"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["rocketry", "telemetry", "ground-station", "hpr", "avionics"],
+  "author": "Valdex",
   "license": "ISC",
   "type": "module",
   "devDependencies": {

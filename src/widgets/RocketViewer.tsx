@@ -216,7 +216,13 @@ export default function RocketViewer(props: { q: Q; frames: Array<{ t_ms: number
   const phase = derivePhase(props.frames, props.tMs);
 
   return (
-    <div style={{ position: "relative", height: "100%", minHeight: 260, borderRadius: 3, overflow: "hidden", border: "1px solid var(--vx-line)" }}>
+    <div
+      style={{ position: "relative", height: "100%", minHeight: 260, borderRadius: 3, overflow: "hidden", border: "1px solid var(--vx-line)" }}
+      // Orbiting the model must never start a grid drag/resize.
+      onMouseDown={(e) => e.stopPropagation()}
+      onTouchStart={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
       <Canvas camera={{ position: [2.8, 1.4, 2.8], fov: 50 }}>
         <Scene q={props.q} config={config} sustainer={sustainer} booster={booster} phase={phase} />
       </Canvas>

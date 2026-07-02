@@ -15,6 +15,8 @@ export type WidgetId =
 
 export type WidgetCategory = "Core" | "Navigation" | "IMU" | "Attitude" | "Viz" | "Flight" | "Safety" | "Sensors";
 
+export type WidgetView = "card" | "instrument" | "plot";
+
 export type WidgetDef = {
   id: WidgetId;
   name: string;
@@ -22,7 +24,8 @@ export type WidgetDef = {
   requires: string[]; // telemetry keys/capabilities
   hardwareHint: string;
   defaultSize: { w: number; h: number };
-  defaultView?: "card" | "instrument" | "plot";
+  defaultView?: WidgetView;
+  views?: WidgetView[]; // views this widget actually implements (default: ["card"])
   defaultTheme?: { accent?: string; bg?: string; border?: string };
 };
 
@@ -35,6 +38,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Shows raw telemetry lines. Useful for debugging any setup.",
     defaultSize: { w: 12, h: 10 },
     defaultView: "card",
+    views: ["card"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -45,6 +49,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Barometer/altimeter required (BMP280/BME280/MS5611 or flight computer altitude output).",
     defaultSize: { w: 4, h: 6 },
     defaultView: "card",
+    views: ["card", "instrument", "plot"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -55,6 +60,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Velocity required (derived onboard or computed from baro/GPS). Recommended: vertical velocity m/s.",
     defaultSize: { w: 4, h: 6 },
     defaultView: "card",
+    views: ["card", "instrument", "plot"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -65,6 +71,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Battery voltage required (divider into ADC or flight computer VBAT output).",
     defaultSize: { w: 4, h: 6 },
     defaultView: "card",
+    views: ["card", "instrument", "plot"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -75,6 +82,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Quaternion required from your flight computer / IMU fusion. (A now, B later: compute onboard).",
     defaultSize: { w: 6, h: 8 },
     defaultView: "instrument",
+    views: ["card", "instrument", "plot"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -85,6 +93,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Shows your uploaded rocket CAD. With quaternion telemetry (q_w/x/y/z) it flies live; without, it idles.",
     defaultSize: { w: 6, h: 8 },
     defaultView: "instrument",
+    views: ["instrument"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -95,6 +104,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "GPS required (any module outputting lat/lon). Offline range map + recovery bearing/distance.",
     defaultSize: { w: 6, h: 8 },
     defaultView: "instrument",
+    views: ["card", "instrument"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -105,6 +115,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "IMU required (MPU-6050/9250/ICM-20948). Output accel + gyro axes.",
     defaultSize: { w: 6, h: 6 },
     defaultView: "card",
+    views: ["card"],
     defaultTheme: { accent: "#7aa2ff" },
   },
   {
@@ -115,6 +126,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Altimeter required. Computes apogee, max V/G, phase timings, and descent rates for competition scoring.",
     defaultSize: { w: 6, h: 9 },
     defaultView: "card",
+    views: ["card"],
     defaultTheme: { accent: "#24e08a" },
   },
   {
@@ -125,6 +137,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Flight computer with pyro continuity output (pyro_main_cont / pyro_drogue_cont). Shows continuity + armed state.",
     defaultSize: { w: 5, h: 7 },
     defaultView: "card",
+    views: ["card"],
     defaultTheme: { accent: "#ffb02e" },
   },
   {
@@ -135,6 +148,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "Onboard baro/temp sensor (BMP280/BME280/MS5611). Shows temperature, pressure, and humidity.",
     defaultSize: { w: 5, h: 7 },
     defaultView: "card",
+    views: ["card", "plot"],
     defaultTheme: { accent: "#57c1ff" },
   },
   {
@@ -145,6 +159,7 @@ export const WIDGETS: WidgetDef[] = [
     hardwareHint: "No hardware required. L3-style pre-flight checklist — progress feeds range-safety discipline.",
     defaultSize: { w: 4, h: 10 },
     defaultView: "card",
+    views: ["card"],
     defaultTheme: { accent: "#24e08a" },
   },
 ];

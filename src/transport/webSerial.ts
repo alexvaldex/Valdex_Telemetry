@@ -9,6 +9,7 @@ export class WebSerialConnection implements Connection {
 
   private port: SerialPort | null = null;
   private reader: ReadableStreamDefaultReader<string> | null = null;
+  private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   private readClosed: Promise<void> | null = null;
   private lineListeners = new Set<(line: string) => void>();
   private statusListeners = new Set<(status: ConnectionStatus) => void>();
@@ -40,6 +41,7 @@ export class WebSerialConnection implements Connection {
       const port = await navigator.serial!.requestPort();
       await port.open({ baudRate: opts.baudRate });
       this.port = port;
+      if (port.writable) this.writer = port.writable.getWriter();
       this.setStatus("connected");
       this.readLoop();
     } catch (err) {
@@ -81,7 +83,19 @@ export class WebSerialConnection implements Connection {
     })();
   }
 
+  async write(line: string): Promise<void> {
+    if (!this.writer) throw new Error("Serial port is not writable");
+    await this.writer.write(new TextEncoder().encode(line + "\n"));
+  }
+
   async disconnect(): Promise<void> {
+    try {
+      this.writer?.releaseLock();
+    } catch {
+      // ignore
+    }
+    this.writer = null;
+
     try {
       await this.reader?.cancel();
     } catch {

@@ -29,6 +29,8 @@ import {
 import type { Model3D, UpAxis } from "./widgets/rocketModel";
 import { getFieldMap, saveFieldMap, getUnknownKeys, V1_TARGET_KEYS, type FieldMapping } from "./telemetry/fieldMap";
 import { speak } from "./audio/voice";
+import { loadAlertRules, saveAlertRules, ruleFires, RULE_FIELDS, type AlertRule } from "./telemetry/alertRules";
+import { computeFlightSummary } from "./widgets/flightSummary";
 
 /** ---------- Types ---------- */
 type WidgetInstance = { key: string; widgetId: WidgetId };
@@ -522,6 +524,46 @@ export default function App() {
   /** Field remapping modal */
   const [fieldMapOpen, setFieldMapOpen] = useState(false);
 
+  /** Custom alert rules */
+  const [alertRulesOpen, setAlertRulesOpen] = useState(false);
+  const [alertRules, setAlertRules] = useState<AlertRule[]>(() => loadAlertRules());
+  function updateAlertRules(next: AlertRule[]) {
+    setAlertRules(next);
+    saveAlertRules(next);
+  }
+
+  /** Layout presets */
+  type LayoutPreset = { name: string; instances: WidgetInstance[]; layout: Layout; widgetSettings: Record<string, WidgetSettings> };
+  const [layoutPresets, setLayoutPresets] = useState<LayoutPreset[]>(() => loadJSON<LayoutPreset[]>("vx.layoutPresets", []));
+  const [selectedPreset, setSelectedPreset] = useState("");
+  function persistPresets(next: LayoutPreset[]) {
+    setLayoutPresets(next);
+    localStorage.setItem("vx.layoutPresets", JSON.stringify(next));
+  }
+  function saveCurrentAsPreset() {
+    const name = window.prompt("Preset name (e.g. Pad, Flight, Recovery):", selectedPreset || "");
+    if (!name?.trim()) return;
+    const preset: LayoutPreset = { name: name.trim(), instances, layout, widgetSettings };
+    persistPresets([...layoutPresets.filter((p) => p.name !== preset.name), preset]);
+    setSelectedPreset(preset.name);
+  }
+  function applyPreset(name: string) {
+    const p = layoutPresets.find((x) => x.name === name);
+    if (!p) return;
+    setSelectedPreset(name);
+    setInstances(p.instances);
+    setLayout(p.layout);
+    setWidgetSettings(p.widgetSettings);
+    persist(p.instances, p.layout);
+    localStorage.setItem("vx.widgetSettings", JSON.stringify(p.widgetSettings));
+  }
+  function deleteSelectedPreset() {
+    if (!selectedPreset) return;
+    if (!window.confirm(`Delete layout preset "${selectedPreset}"?`)) return;
+    persistPresets(layoutPresets.filter((p) => p.name !== selectedPreset));
+    setSelectedPreset("");
+  }
+
   /** Voice callouts */
   const [voiceOn, setVoiceOn] = useState<boolean>(() => {
     try { return localStorage.getItem("vx.voice") !== "0"; } catch { return true; }
@@ -795,6 +837,25 @@ export default function App() {
     if (accent || view) saveWidgetSettings(key, { accent, view });
 
     return key;
+  }
+
+  /** Per-widget lock: RGL `static` items can't be dragged or resized, so
+      canvas interactions (3D orbit) can never move the widget. */
+  function toggleWidgetPin(key: string) {
+    const next = layout.map((l) => (l.i === key ? ({ ...l, static: !(l as any).static } as any) : l));
+    setLayout(next);
+    persist(instances, next);
+  }
+
+  /** Send a command line to the connected device (TX console). */
+  async function sendCommand(cmd: string) {
+    const conn = connectionRef.current;
+    liveStore.ingest(`> ${cmd}`); // echo into the raw console
+    try {
+      await conn?.write?.(cmd);
+    } catch (err) {
+      liveStore.ingest(`# TX ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   function removeWidget(key: string) {
@@ -1132,6 +1193,111 @@ export default function App() {
     downloadTextFile(`valdex_track_${stamp}.kml`, kml, "application/vnd.google-earth.kml+xml");
   }
 
+  /** Export the GPS track as GPX — supported by nearly every GPS/mapping app. */
+  function exportGPX() {
+    const src = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    const gps = src.filter((f) => typeof f.lat === "number" && typeof f.lon === "number");
+    if (!gps.length) {
+      window.alert("No GPS data in this session to export.");
+      return;
+    }
+    const t0 = sessionStartRef.current;
+    const firstT = gps[0].t_ms;
+    const iso = (f: TelemetryFrameV1) => new Date(t0 + (f.t_ms - firstT)).toISOString();
+    const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    const trkpts = gps
+      .map(
+        (f) =>
+          `      <trkpt lat="${f.lat}" lon="${f.lon}">${typeof f.alt_m === "number" ? `<ele>${f.alt_m.toFixed(1)}</ele>` : ""}<time>${iso(f)}</time></trkpt>`
+      )
+      .join("\n");
+    const wpts = gps
+      .filter((f) => typeof f.event === "string" && f.event.trim())
+      .map(
+        (f) =>
+          `  <wpt lat="${f.lat}" lon="${f.lon}">${typeof f.alt_m === "number" ? `<ele>${f.alt_m.toFixed(1)}</ele>` : ""}<name>${esc(f.event as string)}</name></wpt>`
+      )
+      .join("\n");
+
+    const gpx = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="VX Telemetry" xmlns="http://www.topografix.com/GPX/1/1">
+${wpts}
+  <trk>
+    <name>VX Telemetry flight track</name>
+    <trkseg>
+${trkpts}
+    </trkseg>
+  </trk>
+</gpx>`;
+    const stamp = new Date(sessionStartRef.current).toISOString().replace(/[:.]/g, "-").split("Z")[0];
+    downloadTextFile(`valdex_track_${stamp}.gpx`, gpx, "application/gpx+xml");
+  }
+
+  /** Open a print-ready mission report (browser Print → Save as PDF). */
+  function openFlightReport() {
+    const frames = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    if (!frames.length) {
+      window.alert("No flight data to report.");
+      return;
+    }
+    const s = computeFlightSummary(frames);
+    const cfg = getRocketConfig();
+    const m2ft = (m?: number) => (typeof m === "number" ? `${m.toFixed(1)} m / ${(m * 3.28084).toFixed(0)} ft` : "—");
+    const mps = (v?: number) => (typeof v === "number" ? `${v.toFixed(1)} m/s / ${(v * 3.28084).toFixed(0)} ft/s` : "—");
+    const secs = (x?: number) => (typeof x === "number" ? `${x.toFixed(1)} s` : "—");
+    const liftoff = derivedEvents.find((e) => e.id === "LIFTOFF");
+    const evRows = derivedEvents
+      .map((e) => {
+        const tPlus = liftoff ? ((e.t_ms - liftoff.t_ms) / 1000).toFixed(1) : "—";
+        return `<tr><td>${e.id}</td><td>T+ ${tPlus} s</td><td>${e.label}</td></tr>`;
+      })
+      .join("");
+    const rows = [
+      ["Apogee", m2ft(s.apogeeM)],
+      ["Max velocity", mps(s.maxVelMps)],
+      ["Max acceleration", typeof s.maxAccelG === "number" ? `${s.maxAccelG.toFixed(1)} g` : "—"],
+      ["Boost duration", secs(s.boostS)],
+      ["Coast to apogee", secs(s.coastS)],
+      ["Descent duration", secs(s.descentS)],
+      ["Total flight time", secs(s.totalS)],
+      ["Drogue descent rate", mps(s.drogueRateMps)],
+      ["Main descent rate", mps(s.mainRateMps)],
+      ["Frames analyzed", String(frames.length)],
+    ]
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`)
+      .join("");
+
+    const w = window.open("", "_blank", "width=760,height=900");
+    if (!w) {
+      window.alert("Popup blocked — allow popups to generate the report.");
+      return;
+    }
+    w.document.write(`<!DOCTYPE html><html><head><title>VX Flight Report — ${cfg.name}</title>
+<style>
+  body { font-family: "Helvetica Neue", Arial, sans-serif; color: #111; margin: 40px; }
+  h1 { font-size: 22px; letter-spacing: 0.08em; text-transform: uppercase; margin: 0; }
+  .sub { color: #666; font-size: 12px; margin: 6px 0 24px; }
+  h2 { font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: #444; border-bottom: 2px solid #111; padding-bottom: 6px; margin-top: 28px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 7px 8px; border-bottom: 1px solid #ddd; }
+  td:first-child { color: #555; width: 40%; text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
+  .footer { margin-top: 36px; font-size: 10px; color: #999; }
+  .btn { margin: 24px 0; padding: 10px 18px; font-size: 13px; cursor: pointer; }
+  @media print { .btn { display: none; } }
+</style></head><body>
+  <h1>Flight Report — ${cfg.name}</h1>
+  <div class="sub">${new Date(sessionStartRef.current).toLocaleString()} · ${cfg.stages === 2 ? "Two-stage" : "Single-stage"} · Recovery: ${cfg.recovery} · ${playback.mode === "playback" ? `Playback: ${playback.filename ?? ""}` : "Live session"}</div>
+  <button class="btn" onclick="window.print()">Print / Save as PDF</button>
+  <h2>Performance</h2>
+  <table>${rows}</table>
+  <h2>Flight Events</h2>
+  <table>${evRows || "<tr><td colspan=3>No events recorded</td></tr>"}</table>
+  <div class="footer">Generated by VX Telemetry — Valdex ground station</div>
+</body></html>`);
+    w.document.close();
+  }
+
   /** Link health */
   const linkHealth = useMemo(() => {
     const now = performance.now();
@@ -1205,6 +1371,26 @@ export default function App() {
       }
     }
   }, [linkHealth, playback.mode, battProfile]);
+
+  /** Custom alert rules engine (live only). */
+  useEffect(() => {
+    if (playback.mode === "playback") return;
+    const latest = telemetry.latest as Record<string, unknown> | undefined;
+    for (const rule of alertRules) {
+      const id = `rule-${rule.id}`;
+      if (ruleFires(rule, latest)) {
+        const v = latest?.[rule.field];
+        pushAlert({
+          id,
+          level: rule.level,
+          title: rule.title || `${rule.field} ${rule.op} ${rule.value}`,
+          detail: `${rule.field} = ${typeof v === "number" ? v.toFixed(2) : "—"} (limit ${rule.op} ${rule.value})`,
+        });
+      } else {
+        clearAlert(id);
+      }
+    }
+  }, [telemetry.latest, alertRules, playback.mode]);
 
   const modeChip = playback.mode === "playback" ? `PLAYBACK${playback.filename ? `: ${playback.filename}` : ""}` : "LIVE";
 
@@ -1785,6 +1971,54 @@ export default function App() {
         .vx-readout .v small { font-size: 11px; color: var(--vx-fg-dim); font-weight: 500; margin-left: 3px; }
         .vx-readout.peak .v { color: var(--vx-blue-bright); }
 
+        /* ---------- Widget chrome ---------- */
+        .vx-seg {
+          display: inline-flex;
+          border: 1px solid var(--vx-line);
+          border-radius: 3px;
+          overflow: hidden;
+        }
+        .vx-seg button {
+          background: rgba(10,16,30,0.6);
+          border: none;
+          border-right: 1px solid var(--vx-line);
+          color: var(--vx-fg-dim);
+          font-family: var(--vx-font-display);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          padding: 5px 8px;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+        .vx-seg button:last-child { border-right: none; }
+        .vx-seg button:hover { color: var(--vx-fg); background: rgba(31,157,255,0.1); }
+        .vx-seg button.on {
+          background: rgba(31,157,255,0.25);
+          color: var(--vx-blue-bright);
+        }
+
+        .vx-tbtn {
+          min-width: 26px; height: 26px;
+          padding: 0 6px;
+          border-radius: 3px;
+          border: 1px solid var(--vx-line);
+          background: rgba(10,16,30,0.6);
+          color: var(--vx-fg-dim);
+          font-family: var(--vx-font-display);
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          cursor: pointer;
+          transition: all 0.12s ease;
+        }
+        .vx-tbtn:hover:not(:disabled) { color: var(--vx-fg); border-color: var(--vx-line-strong); }
+        .vx-tbtn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .vx-tbtn-danger:hover:not(:disabled) { color: var(--vx-crit); border-color: var(--vx-crit); }
+
+        /* Size container: widget bodies can scale type with cqw units */
+        .vx-body { container-type: size; }
+
         /* ---------- Master caution banner ---------- */
         @keyframes vx-caution-flash {
           0%, 100% { background: rgba(255,59,71,0.14); }
@@ -2098,6 +2332,28 @@ export default function App() {
               </optgroup>
             ))}
           </select>
+
+          {/* Layout presets */}
+          <select
+            className="vx-select"
+            value={selectedPreset}
+            onChange={(e) => applyPreset(e.target.value)}
+            disabled={!isLayoutEditable}
+            title="Load a saved dashboard layout"
+          >
+            <option value="" disabled>Layouts…</option>
+            {layoutPresets.map((p) => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+          <button className="vx-btn" onClick={saveCurrentAsPreset} disabled={!isLayoutEditable} title="Save the current layout as a named preset">
+            Save Layout
+          </button>
+          {selectedPreset && (
+            <button className="vx-btn vx-btn-danger" onClick={deleteSelectedPreset} disabled={!isLayoutEditable} title={`Delete preset "${selectedPreset}"`}>
+              ✕
+            </button>
+          )}
         </div>
 
         <div className="vx-toolbar-right">
@@ -2110,7 +2366,10 @@ export default function App() {
           </button>
           <button className="vx-btn" onClick={exportSessionJSONL} title={`Export raw telemetry (Ctrl+E) (${logCount})`}>Export JSONL</button>
           <button className="vx-btn" onClick={exportFramesCSV} title="Export frames as CSV (Ctrl+Shift+E)">Export CSV</button>
-          <button className="vx-btn" onClick={exportKML} title="Export GPS track as KML (Google Earth)">Export KML</button>
+          <button className="vx-btn" onClick={exportKML} title="Export GPS track as KML — open with Google Earth Pro or import at earth.google.com">Export KML</button>
+          <button className="vx-btn" onClick={exportGPX} title="Export GPS track as GPX — works with most GPS/mapping apps">Export GPX</button>
+          <button className="vx-btn" onClick={openFlightReport} title="Print-ready mission report (use Print → Save as PDF)">Report</button>
+          <button className="vx-btn" onClick={() => setAlertRulesOpen(true)} title="Custom alert thresholds on any telemetry field">Alert Rules{alertRules.length ? ` (${alertRules.length})` : ""}</button>
           <button className="vx-btn" onClick={() => setFieldMapOpen(true)} title="Map custom firmware field names onto the VX telemetry contract">Field Map</button>
 
           <label className="vx-btn" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
@@ -2203,9 +2462,13 @@ export default function App() {
                 globalUnits={globalUnits}
                 settings={widgetSettings[inst.key]}
                 locked={!isLayoutEditable} // locked in flight + playback
+                pinned={!!(layout.find((l) => l.i === inst.key) as any)?.static}
+                connected={connStatus === "connected"}
                 theme={theme}
                 onPatchSettings={(patch) => saveWidgetSettings(inst.key, patch)}
                 onResetAccent={() => resetWidgetAccent(inst.key)}
+                onTogglePin={() => toggleWidgetPin(inst.key)}
+                onSendCommand={sendCommand}
                 onRemove={() => removeWidget(inst.key)}
               />
             </div>
@@ -2285,6 +2548,11 @@ export default function App() {
 
       {/* Field Map Modal */}
       {fieldMapOpen && <FieldMapModal onClose={() => setFieldMapOpen(false)} />}
+
+      {/* Alert Rules Modal */}
+      {alertRulesOpen && (
+        <AlertRulesModal rules={alertRules} onChange={updateAlertRules} onClose={() => setAlertRulesOpen(false)} />
+      )}
 
       {/* Command Palette */}
       {paletteOpen && (
@@ -2463,6 +2731,83 @@ function ContextMenu(props: {
           <div style={{ fontWeight: 900 }}>Close</div>
           <div className="vx-menu-muted">Esc</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** ---------- AlertRulesModal — custom telemetry thresholds ---------- */
+function AlertRulesModal(props: { rules: AlertRule[]; onChange: (rules: AlertRule[]) => void; onClose: () => void }) {
+  const { rules } = props;
+
+  function setRule(i: number, patch: Partial<AlertRule>) {
+    props.onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  }
+  function addRule() {
+    props.onChange([
+      ...rules,
+      { id: String(Date.now()), field: "batt_v", op: "<", value: 7.0, level: "warn", title: "" },
+    ]);
+  }
+
+  return (
+    <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          width: "min(720px, 94vw)", maxHeight: "86vh", overflow: "auto",
+          background: "rgba(7,11,22,0.98)", border: "1px solid var(--vx-line-strong)",
+          borderRadius: 4, boxShadow: "0 22px 70px rgba(0,0,0,0.75)", padding: 20,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", fontSize: 15 }}>Alert Rules</div>
+          <button className="vx-xbtn" onClick={props.onClose}>×</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--vx-fg-dim)", lineHeight: 1.6, marginBottom: 12 }}>
+          Fire a caution (yellow) or critical (red, triggers master-caution alarm) when a telemetry field crosses a
+          threshold. Evaluated live on every update.
+        </div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          {rules.map((r, i) => (
+            <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1.2fr auto 0.8fr 0.9fr 1.4fr auto", gap: 8, alignItems: "center" }}>
+              <select className="vx-select" value={r.field} onChange={(e) => setRule(i, { field: e.target.value })}>
+                {RULE_FIELDS.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+              <select className="vx-select" value={r.op} onChange={(e) => setRule(i, { op: e.target.value as ">" | "<" })}>
+                <option value=">">&gt;</option>
+                <option value="<">&lt;</option>
+              </select>
+              <input
+                className="vx-input"
+                type="number"
+                step="any"
+                value={Number.isFinite(r.value) ? r.value : ""}
+                onChange={(e) => setRule(i, { value: Number(e.target.value) })}
+              />
+              <select className="vx-select" value={r.level} onChange={(e) => setRule(i, { level: e.target.value as "warn" | "crit" })}>
+                <option value="warn">Caution</option>
+                <option value="crit">Critical</option>
+              </select>
+              <input
+                className="vx-input"
+                placeholder="Alert title (optional)"
+                value={r.title}
+                onChange={(e) => setRule(i, { title: e.target.value })}
+              />
+              <button className="vx-xbtn" onClick={() => props.onChange(rules.filter((_, j) => j !== i))} title="Delete rule">×</button>
+            </div>
+          ))}
+          {!rules.length && (
+            <div style={{ fontSize: 12, color: "var(--vx-fg-faint)", padding: "10px 0" }}>
+              No rules yet — e.g. <code>batt_v &lt; 7.0 → Caution</code> or <code>gps_sats &lt; 5 → Critical</code>.
+            </div>
+          )}
+        </div>
+
+        <button className="vx-btn vx-btn-primary" style={{ marginTop: 12 }} onClick={addRule}>+ Add rule</button>
       </div>
     </div>
   );
@@ -3198,9 +3543,13 @@ function WidgetFrame(props: {
   globalUnits: UnitSystem;
   settings?: WidgetSettings;
   locked: boolean;
+  pinned: boolean;
+  connected: boolean;
   theme: ThemeSettings;
   onPatchSettings: (patch: WidgetSettings) => void;
   onResetAccent: () => void;
+  onTogglePin: () => void;
+  onSendCommand: (cmd: string) => void;
   onRemove: () => void;
 }) {
   const def: any = WIDGETS.find((x: any) => x.id === props.widgetId);
@@ -3211,7 +3560,19 @@ function WidgetFrame(props: {
   const defaultAccent = def?.defaultTheme?.accent ?? "#7aa2ff";
   const accent = props.settings?.accent ?? defaultAccent;
   const unitSystem: UnitSystem = props.settings?.units ?? props.globalUnits;
-  const view = props.settings?.view ?? def?.defaultView ?? "card";
+  const supportedViews: Array<"card" | "instrument" | "plot"> = def?.views ?? ["card"];
+  const viewRaw = props.settings?.view ?? def?.defaultView ?? "card";
+  const view = supportedViews.includes(viewRaw) ? viewRaw : supportedViews[0];
+
+  // Per-widget unit override cycles inherit -> metric -> imperial.
+  const unitsMode = props.settings?.units ?? "inherit";
+  function cycleUnits() {
+    const next = unitsMode === "inherit" ? "metric" : unitsMode === "metric" ? "imperial" : undefined;
+    props.onPatchSettings({ units: next as UnitSystem | undefined });
+  }
+
+  // TX console (raw console widget only)
+  const [txCmd, setTxCmd] = useState("");
 
   // RAW console special scrolling
   const rawRef = useRef<HTMLDivElement | null>(null);
@@ -3228,6 +3589,8 @@ function WidgetFrame(props: {
 
   const consoleFg = autoTextColor(props.theme.consoleBg);
 
+  const VIEW_LABEL: Record<string, string> = { card: "NUM", instrument: "GAUGE", plot: "PLOT" };
+
   return (
     <div
       className="vx-widget vx-widget-outline"
@@ -3239,92 +3602,131 @@ function WidgetFrame(props: {
       }}
       title={enabled ? "" : def?.hardwareHint ?? "Missing required telemetry"}
     >
-      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: accent }} />
+      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: accent, opacity: 0.9 }} />
 
-      <div className="vx-widget-inner" style={{ paddingLeft: 12 }}>  
-        <div className="vx-titlebar">
-          <div style={{ display: "flex", gap: 10, alignItems: "baseline", minWidth: 0 }}>
-            <span style={{ fontSize: 16, fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div className="vx-widget-inner" style={{ paddingLeft: 13, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div className="vx-titlebar" style={{ flex: "0 0 auto" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+            <span
+              title={requires.length ? `Requires: ${requires.join(", ")}` : undefined}
+              style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--vx-fg)" }}
+            >
               {def?.name ?? props.widgetId}
             </span>
-            {requires.length ? (
-              <span style={{ fontSize: 12, opacity: 0.7, whiteSpace: "nowrap" }}>
-                requires: {requires.slice(0, 3).join(", ")}{requires.length > 3 ? "…" : ""}
-              </span>
-            ) : null}
+            {props.pinned && <span style={{ fontSize: 10, color: "var(--vx-caution)", letterSpacing: "0.1em" }}>LOCKED</span>}
           </div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div style={{ display: "flex", gap: 4 }}>
-              <button className={`vx-btn ${view === "card" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "card" })} title="Card view" style={{ padding: "6px 8px" }}>NUM</button>
-              <button className={`vx-btn ${view === "instrument" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "instrument" })} title="Instrument view" style={{ padding: "6px 8px" }}>GAUGE</button>
-              <button className={`vx-btn ${view === "plot" ? "vx-btn-primary" : ""}`} onClick={() => props.onPatchSettings({ view: "plot" })} title="Plot view" style={{ padding: "6px 8px" }}>PLOT</button>
-            </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
+            {/* View switch — only the views this widget implements */}
+            {supportedViews.length > 1 && (
+              <div className="vx-seg">
+                {supportedViews.map((v) => (
+                  <button
+                    key={v}
+                    className={view === v ? "on" : ""}
+                    onClick={() => props.onPatchSettings({ view: v })}
+                    title={`${VIEW_LABEL[v]} view`}
+                  >
+                    {VIEW_LABEL[v]}
+                  </button>
+                ))}
+              </div>
+            )}
 
-            <select
-              className="vx-select"
-              value={(props.settings?.units ?? ("inherit" as any)) as any}
-              onChange={(e) => {
-                const v = e.target.value;
-                props.onPatchSettings({ units: v === "inherit" ? undefined : (v as UnitSystem) });
-              }}
-              title="Per-widget units"
+            {/* Units: G (global) -> SI -> US */}
+            <button
+              className="vx-tbtn"
+              onClick={cycleUnits}
+              title={`Units: ${unitsMode === "inherit" ? "inherit global" : unitsMode} — click to cycle`}
             >
-              <option value="inherit">Units</option>
-              <option value="metric">Metric</option>
-              <option value="imperial">Imperial</option>
-            </select>
+              {unitsMode === "inherit" ? "U:G" : unitsMode === "metric" ? "SI" : "US"}
+            </button>
 
-            {/* Accent picker + reset */}
+            {/* Accent dot — pick color; right-click resets to default */}
             <label
-              title="Widget accent color"
+              title="Accent color (right-click to reset)"
+              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); props.onResetAccent(); }}
               style={{
-                width: 26,
-                height: 26,
-                borderRadius: 999,
-                border: "1px solid rgba(255,255,255,0.18)",
-                background: accent,
-                cursor: "pointer",
-                overflow: "hidden",
+                width: 18, height: 18, borderRadius: "50%",
+                border: "1px solid var(--vx-line-strong)",
+                background: accent, cursor: "pointer", overflow: "hidden", flex: "0 0 auto",
               }}
             >
               <input type="color" value={accent} onChange={(e) => props.onPatchSettings({ accent: e.target.value })} style={{ opacity: 0, width: "100%", height: "100%" }} />
             </label>
 
-            <button className="vx-btn vx-btn-danger" onClick={props.onResetAccent} title={`Reset accent to default (${defaultAccent})`} style={{ padding: "6px 10px" }}>
-              Reset
+            {/* Per-widget lock: freezes this widget's position/size so canvas
+                interaction (e.g. orbiting the 3D model) can't move it */}
+            <button
+              className="vx-tbtn"
+              onClick={props.onTogglePin}
+              title={props.pinned ? "Unlock widget position/size" : "Lock widget position/size"}
+              style={props.pinned ? { color: "var(--vx-caution)", borderColor: "var(--vx-caution)" } : undefined}
+            >
+              {props.pinned ? "🔒" : "🔓"}
             </button>
 
-            <button className="vx-xbtn" onClick={props.onRemove} title={props.locked ? "Locked" : "Remove widget"} disabled={props.locked}>
+            <button className="vx-tbtn vx-tbtn-danger" onClick={props.onRemove} title={props.locked ? "Locked in Flight Mode" : "Remove widget"} disabled={props.locked}>
               ×
             </button>
           </div>
         </div>
 
-        {props.widgetId === "raw.console" ? (
-          <div
-            ref={rawRef}
-            style={{
-              height: "calc(100% - 52px)",
-              overflow: "auto",
-              borderRadius: 12,
-              border: "1px solid rgba(255,255,255,0.10)",
-              background: props.theme.consoleBg,
-              padding: 10,
-              color: consoleFg,
-            }}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              rawPinnedTopRef.current = el.scrollTop <= 2;
-            }}
-          >
-            <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 12, opacity: 0.95 }}>
-              {[...(props.telemetry.rawLines ?? [])].slice().reverse().join("\n")}
-            </pre>
-          </div>
-        ) : (
-          body
-        )}
+        {/* Body — definite height + size container so content scales with the widget */}
+        <div className="vx-body" style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          {props.widgetId === "raw.console" ? (
+            <>
+              <div
+                ref={rawRef}
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflow: "auto",
+                  borderRadius: 3,
+                  border: "1px solid var(--vx-line)",
+                  background: props.theme.consoleBg,
+                  padding: 10,
+                  color: consoleFg,
+                }}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  rawPinnedTopRef.current = el.scrollTop <= 2;
+                }}
+              >
+                <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 12, opacity: 0.95, fontFamily: "var(--vx-font-mono)" }}>
+                  {[...(props.telemetry.rawLines ?? [])].slice().reverse().join("\n")}
+                </pre>
+              </div>
+
+              {/* TX command line */}
+              <div style={{ display: "flex", gap: 6, marginTop: 8, flex: "0 0 auto" }}>
+                <input
+                  className="vx-input"
+                  style={{ flex: 1, fontFamily: "var(--vx-font-mono)", fontSize: 12 }}
+                  placeholder={props.connected ? "TX command… (Enter to send)" : "Connect to send commands"}
+                  disabled={!props.connected}
+                  value={txCmd}
+                  onChange={(e) => setTxCmd(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && txCmd.trim()) {
+                      props.onSendCommand(txCmd.trim());
+                      setTxCmd("");
+                    }
+                  }}
+                />
+                <button
+                  className="vx-btn"
+                  disabled={!props.connected || !txCmd.trim()}
+                  onClick={() => { props.onSendCommand(txCmd.trim()); setTxCmd(""); }}
+                >
+                  Send
+                </button>
+              </div>
+            </>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0, overflow: view === "instrument" ? "hidden" : "auto", display: "flex", flexDirection: "column" }}>{body}</div>
+          )}
+        </div>
       </div>
     </div>
   );
