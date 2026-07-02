@@ -4,7 +4,7 @@ import type { WidgetId } from "./registry";
 import type { TelemetryFrameV1 } from "../telemetry/types";
 import type { UnitSystem } from "../units";
 
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useState, useRef, useEffect } from "react";
 
 // Heavy three.js viewer, code-split so it downloads only when a 3D widget shows.
 const RocketViewer = lazy(() => import("./RocketViewer"));
@@ -214,7 +214,17 @@ function GaugeBar(props: { pct: number; accent?: string }) {
   );
 }
 
-/** --------- plotting (simple SVG) --------- */
+/** --------- plotting (interactive SVG) ---------
+ * Time-domain plot with mission-control interactions:
+ *   wheel        zoom around the cursor
+ *   drag         pan through history (auto re-pins to LIVE at the right edge)
+ *   double-click reset to full range
+ *   hover        crosshair with value + time readout
+ * Y auto-fits to the visible window. Data is downsampled when a window holds
+ * more points than pixels can show.
+ */
+type PlotWindow = { span: number; end: number | "live" } | null;
+
 function PlotLine(props: {
   frames: TelemetryFrameV1[];
   yKey: string;
@@ -225,54 +235,142 @@ function PlotLine(props: {
   transformY?: (v: number) => number;
 }) {
   const h = props.height ?? 160;
+  const plotRef = useRef<HTMLDivElement | null>(null);
+  const [win, setWin] = useState<PlotWindow>(null);
+  const [hover, setHover] = useState<{ frac: number; t: number; y: number } | null>(null);
+  const dragRef = useRef<{ startX: number; endAtStart: number; moved: boolean } | null>(null);
 
-  const points = useMemo(() => {
-    const xs: number[] = [];
-    const ys: number[] = [];
-    for (let i = 0; i < props.frames.length; i++) {
-      const f = props.frames[i] as any;
-      const yRaw = f[props.yKey];
-      const y = typeof yRaw === "number" ? yRaw : NaN;
-      if (!Number.isFinite(y)) continue;
-      xs.push(i);
-      ys.push(props.transformY ? props.transformY(y) : y);
+  // Series in time domain.
+  const series = useMemo(() => {
+    const pts: Array<{ t: number; y: number }> = [];
+    for (const f of props.frames as any[]) {
+      const yRaw = f?.[props.yKey];
+      const t = f?.t_ms;
+      if (typeof yRaw !== "number" || !Number.isFinite(yRaw) || typeof t !== "number") continue;
+      pts.push({ t, y: props.transformY ? props.transformY(yRaw) : yRaw });
     }
-    if (xs.length < 2) return null;
+    return pts;
+  }, [props.frames, props.yKey, props.transformY]);
 
-    const yMin = Math.min(...ys);
-    const yMax = Math.max(...ys);
-    const span = (yMax - yMin) || 1;
+  const tMin = series.length ? series[0].t : 0;
+  const tMax = series.length ? series[series.length - 1].t : 1;
+  const fullSpan = Math.max(1, tMax - tMin);
 
-    const W = 1000; // normalize, then scale via viewBox
-    const H = 1000;
+  const t1 = win ? (win.end === "live" ? tMax : win.end) : tMax;
+  const t0 = win ? Math.max(tMin, t1 - win.span) : tMin;
+  const winSpan = Math.max(1, t1 - t0);
 
-    const path = xs.map((x, idx) => {
-      const px = (idx / (xs.length - 1)) * W;
-      const py = H - ((ys[idx] - yMin) / span) * H;
-      return `${idx === 0 ? "M" : "L"} ${px.toFixed(1)} ${py.toFixed(1)}`;
-    }).join(" ");
+  const view = useMemo(() => {
+    if (series.length < 2) return null;
 
-    // Flight-event markers, positioned on the same x-scale as the trace.
-    // xs[k] is the original frame index of the k-th plotted point; map each
-    // event frame to the nearest plotted point so markers line up with data.
+    // Visible slice (with one point of margin each side so lines reach the edges).
+    let lo = series.findIndex((p) => p.t >= t0);
+    if (lo < 0) lo = series.length - 1;
+    lo = Math.max(0, lo - 1);
+    let hi = series.length - 1;
+    for (let i = lo; i < series.length; i++) {
+      if (series[i].t > t1) { hi = i; break; }
+    }
+    const slice = series.slice(lo, hi + 1);
+    if (slice.length < 2) return null;
+
+    // Downsample to ~1200 points.
+    const stride = Math.max(1, Math.ceil(slice.length / 1200));
+    const pts = stride === 1 ? slice : slice.filter((_, i) => i % stride === 0 || i === slice.length - 1);
+
+    let yMin = Infinity, yMax = -Infinity;
+    for (const p of pts) {
+      if (p.y < yMin) yMin = p.y;
+      if (p.y > yMax) yMax = p.y;
+    }
+    const pad = (yMax - yMin || 1) * 0.06;
+    yMin -= pad; yMax += pad;
+    const ySpan = yMax - yMin || 1;
+
+    const W = 1000, H = 1000;
+    const path = pts
+      .map((p, i) => {
+        const px = ((p.t - t0) / winSpan) * W;
+        const py = H - ((p.y - yMin) / ySpan) * H;
+        return `${i === 0 ? "M" : "L"} ${px.toFixed(1)} ${py.toFixed(1)}`;
+      })
+      .join(" ");
+
+    // Event markers inside the window.
     const markers: Array<{ frac: number; label: string }> = [];
     const seen = new Set<string>();
-    for (let i = 0; i < props.frames.length; i++) {
-      const ev = (props.frames[i] as any)?.event;
-      if (typeof ev !== "string" || !ev.trim()) continue;
+    for (const f of props.frames as any[]) {
+      const ev = f?.event;
+      if (typeof ev !== "string" || !ev.trim() || typeof f.t_ms !== "number") continue;
       const label = ev.trim().toUpperCase();
       if (seen.has(label)) continue;
       seen.add(label);
-      let k = 0, best = Infinity;
-      for (let j = 0; j < xs.length; j++) {
-        const d = Math.abs(xs[j] - i);
-        if (d < best) { best = d; k = j; }
-      }
-      markers.push({ frac: k / (xs.length - 1), label });
+      if (f.t_ms < t0 || f.t_ms > t1) continue;
+      markers.push({ frac: (f.t_ms - t0) / winSpan, label });
     }
 
-    return { path, yMin, yMax, markers };
-  }, [props.frames, props.yKey, props.transformY]);
+    return { path, yMin: yMin + pad, yMax: yMax - pad, markers, pts };
+  }, [series, props.frames, t0, t1, winSpan]);
+
+  // Wheel zoom needs a non-passive listener (React's synthetic wheel can't preventDefault).
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (series.length < 2) return;
+      const rect = el.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const cursorT = t0 + frac * winSpan;
+      const factor = e.deltaY > 0 ? 1.3 : 1 / 1.3;
+      const newSpan = Math.max(400, Math.min(fullSpan, winSpan * factor));
+      if (newSpan >= fullSpan * 0.999) { setWin(null); return; }
+      const newT1 = Math.min(tMax, Math.max(tMin + newSpan, cursorT + (1 - frac) * newSpan));
+      setWin({ span: newSpan, end: newT1 >= tMax - fullSpan * 0.005 ? "live" : newT1 });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [series.length, t0, winSpan, fullSpan, tMin, tMax]);
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, endAtStart: t1, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const el = plotRef.current;
+    if (!el || series.length < 2) return;
+    const rect = el.getBoundingClientRect();
+
+    const drag = dragRef.current;
+    if (drag) {
+      const dx = e.clientX - drag.startX;
+      if (Math.abs(dx) > 3) drag.moved = true;
+      if (drag.moved && win) {
+        const dt = (dx / rect.width) * winSpan;
+        const newT1 = Math.max(tMin + winSpan, Math.min(tMax, drag.endAtStart - dt));
+        setWin({ span: winSpan, end: newT1 >= tMax - fullSpan * 0.005 ? "live" : newT1 });
+      }
+      return;
+    }
+
+    const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const tCursor = t0 + frac * winSpan;
+    const pts = view?.pts;
+    if (!pts?.length) return;
+    let best = pts[0], bd = Infinity;
+    for (const p of pts) {
+      const d = Math.abs(p.t - tCursor);
+      if (d < bd) { bd = d; best = p; }
+    }
+    setHover({ frac: (best.t - t0) / winSpan, t: best.t, y: best.y });
+  }
+  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    dragRef.current = null;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ok */ }
+  }
+
+  const scrubbing = win !== null && win.end !== "live";
 
   return (
     <div
@@ -281,67 +379,119 @@ function PlotLine(props: {
         ...(props.fill ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : {}),
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flex: "0 0 auto" }}>
-        <div className="vx-label">{props.yLabel}</div>
-        {points ? (
-          <div style={{ fontSize: 11, color: "var(--vx-fg-dim)", fontFamily: "var(--vx-font-mono)" }}>
-            {points.yMin.toFixed(1)} / {points.yMax.toFixed(1)}
-          </div>
-        ) : (
-          <div style={{ fontSize: 11, color: "var(--vx-fg-faint)" }}>NO DATA</div>
-        )}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, flex: "0 0 auto", gap: 8 }}>
+        <div className="vx-label" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{props.yLabel}</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flex: "0 0 auto" }}>
+          {view && (
+            <span style={{ fontSize: 11, color: "var(--vx-fg-dim)", fontFamily: "var(--vx-font-mono)" }}>
+              {view.yMin.toFixed(1)} / {view.yMax.toFixed(1)}
+            </span>
+          )}
+          <span
+            style={{
+              fontSize: 9, letterSpacing: "0.12em", padding: "2px 6px", borderRadius: 2, cursor: scrubbing ? "pointer" : "default",
+              color: scrubbing ? "var(--vx-caution)" : "var(--vx-go)",
+              border: `1px solid ${scrubbing ? "var(--vx-caution)" : "rgba(36,224,138,0.4)"}`,
+            }}
+            title={scrubbing ? "Viewing history — double-click plot (or click here) to return to live" : win ? "Zoomed, following live" : "Full range, live"}
+            onClick={() => scrubbing && setWin(null)}
+          >
+            {scrubbing ? "◄ SCRUB" : "● LIVE"}
+          </span>
+        </div>
       </div>
 
-      <div style={{ position: "relative", ...(props.fill ? { flex: 1, minHeight: 60 } : {}) }}>
+      <div
+        ref={plotRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerLeave={() => { setHover(null); dragRef.current = null; }}
+        onDoubleClick={() => setWin(null)}
+        style={{
+          position: "relative",
+          cursor: dragRef.current?.moved ? "grabbing" : win ? "grab" : "crosshair",
+          touchAction: "none",
+          userSelect: "none",
+          ...(props.fill ? { flex: 1, minHeight: 60 } : {}),
+        }}
+      >
         <svg viewBox="0 0 1000 1000" width="100%" height={props.fill ? "100%" : h} preserveAspectRatio="none" style={{ display: "block", ...(props.fill ? { position: "absolute", inset: 0 } : {}) }}>
           <path
-            d={points?.path ?? ""}
+            d={view?.path ?? ""}
             fill="none"
             stroke={props.color ?? "var(--vx-blue-bright)"}
             strokeWidth={8}
             strokeLinejoin="round"
             strokeLinecap="round"
             opacity={0.95}
+            vectorEffect="non-scaling-stroke"
           />
         </svg>
 
-        {/* Event markers overlaid on the trace */}
-        {points?.markers.map((m) => (
+        {!view && (
+          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 11, color: "var(--vx-fg-faint)", letterSpacing: "0.14em" }}>
+            NO DATA
+          </div>
+        )}
+
+        {/* Event markers */}
+        {view?.markers.map((m) => (
           <div
             key={m.label}
             style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
+              position: "absolute", top: 0, bottom: 0,
               left: `${(m.frac * 100).toFixed(2)}%`,
-              borderLeft: "1px dashed var(--vx-caution)",
-              opacity: 0.7,
-              pointerEvents: "none",
+              borderLeft: "1px dashed var(--vx-caution)", opacity: 0.7, pointerEvents: "none",
             }}
           >
             <span
               style={{
-                position: "absolute",
-                top: 2,
-                left: m.frac > 0.85 ? "auto" : 3,
-                right: m.frac > 0.85 ? 3 : "auto",
-                fontSize: 9,
-                letterSpacing: "0.08em",
-                fontFamily: "var(--vx-font-mono)",
-                color: "var(--vx-caution)",
-                background: "rgba(4,7,14,0.75)",
-                padding: "1px 3px",
-                borderRadius: 2,
-                whiteSpace: "nowrap",
+                position: "absolute", top: 2,
+                left: m.frac > 0.85 ? "auto" : 3, right: m.frac > 0.85 ? 3 : "auto",
+                fontSize: 9, letterSpacing: "0.08em", fontFamily: "var(--vx-font-mono)",
+                color: "var(--vx-caution)", background: "rgba(4,7,14,0.75)",
+                padding: "1px 3px", borderRadius: 2, whiteSpace: "nowrap",
               }}
             >
               {m.label}
             </span>
           </div>
         ))}
+
+        {/* Hover crosshair + readout */}
+        {hover && view && !dragRef.current?.moved && (
+          <div style={{ position: "absolute", top: 0, bottom: 0, left: `${(hover.frac * 100).toFixed(2)}%`, borderLeft: "1px solid rgba(120,175,255,0.55)", pointerEvents: "none" }}>
+            <span
+              style={{
+                position: "absolute", bottom: 2,
+                left: hover.frac > 0.7 ? "auto" : 5, right: hover.frac > 0.7 ? 5 : "auto",
+                fontSize: 10, fontFamily: "var(--vx-font-mono)",
+                color: "var(--vx-fg)", background: "rgba(4,7,14,0.9)",
+                border: "1px solid var(--vx-line-strong)",
+                padding: "2px 6px", borderRadius: 2, whiteSpace: "nowrap",
+              }}
+            >
+              {hover.y.toFixed(2)} @ {(hover.t / 1000).toFixed(1)}s
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginTop: 6, fontSize: 9, color: "var(--vx-fg-faint)", letterSpacing: "0.08em", flex: "0 0 auto" }}>
+        WHEEL ZOOM · DRAG PAN · DBL-CLICK RESET{win ? ` · WINDOW ${(winSpan / 1000).toFixed(1)}s` : ""}
       </div>
     </div>
   );
+}
+
+/** Off-vertical tilt in degrees: angle between the body long axis (+Y) and
+    world up. 0° = pointing straight up. */
+function tiltDegFromQuat(qw?: number, qx?: number, qy?: number, qz?: number): number | null {
+  if (![qw, qx, qy, qz].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+  const x = qx as number, z = qz as number;
+  const upY = 1 - 2 * (x * x + z * z); // Y component of the rotated body-Y axis
+  return (Math.acos(Math.max(-1, Math.min(1, upY))) * 180) / Math.PI;
 }
 
 /** --------- quaternion -> euler --------- */
@@ -486,12 +636,23 @@ export function renderWidget(args: {
       );
     }
 
+    const gpsAlt = latest?.gps_alt_m;
     return (
       <BigReadout
         value={fmt(v, 1)}
         unit={u}
         stats={seriesStats(frames, "alt_m", (m) => (unitSystem === "imperial" ? mToFt(m) : m))}
-        sub={`MET ${fmt(latest?.t_ms, 0)} ms`}
+        sub={
+          typeof gpsAlt === "number" ? (
+            <span>
+              GPS <b className="vx-num" style={{ color: "var(--vx-fg)" }}>{fmt(unitSystem === "imperial" ? mToFt(gpsAlt) : gpsAlt, 0)} {u}</b>
+              <span style={{ opacity: 0.7 }}> MSL</span>
+              {typeof altM === "number" && <> · Δ <b className="vx-num">{fmt(unitSystem === "imperial" ? mToFt(gpsAlt - altM) : gpsAlt - altM, 0)} {u}</b></>}
+            </span>
+          ) : (
+            `MET ${fmt(latest?.t_ms, 0)} ms`
+          )
+        }
       />
     );
   }
@@ -563,13 +724,23 @@ export function renderWidget(args: {
       );
     }
 
+    const amps = latest?.current_a;
     return (
       <BigReadout
         value={fmt(bv, 2)}
         unit="V"
         stats={seriesStats(frames, "batt_v")}
         statFmt={(x) => x.toFixed(2)}
-        sub="Set battery profile in Settings for pack % + alerts"
+        sub={
+          typeof amps === "number" ? (
+            <span>
+              DRAW <b className="vx-num" style={{ color: "var(--vx-fg)" }}>{amps.toFixed(2)} A</b>
+              {typeof bv === "number" && <> · <b className="vx-num">{(amps * bv).toFixed(1)} W</b></>}
+            </span>
+          ) : (
+            "Set battery profile in Settings for pack % + alerts"
+          )
+        }
       />
     );
   }
@@ -770,6 +941,89 @@ export function renderWidget(args: {
 
   if (widgetId === "checklist.panel") {
     return <ChecklistPanel />;
+  }
+
+  if (widgetId === "tilt.spin") {
+    const tilt = tiltDegFromQuat(latest?.q_w, latest?.q_x, latest?.q_y, latest?.q_z);
+    const spin = typeof latest?.gy === "number" ? Math.abs(latest.gy) : undefined;
+
+    if (view === "plot") {
+      const tiltFrames = frames.map((f) => ({ ...f, __tilt: tiltDegFromQuat(f.q_w, f.q_x, f.q_y, f.q_z) ?? undefined } as any));
+      return (
+        <div style={{ display: "grid", gap: 10, height: "100%", gridTemplateRows: "1fr 1fr", minHeight: 0 }}>
+          <PlotLine fill frames={tiltFrames as any} yKey="__tilt" yLabel="Tilt (°)" color="var(--vx-caution)" />
+          <PlotLine fill frames={frames} yKey="gy" yLabel="Roll rate (°/s)" />
+        </div>
+      );
+    }
+
+    const accent = tilt == null ? undefined : tilt < 5 ? "var(--vx-go)" : tilt < 20 ? "var(--vx-caution)" : "var(--vx-crit)";
+    let maxTilt = -Infinity;
+    for (const f of frames) {
+      const t = tiltDegFromQuat(f.q_w, f.q_x, f.q_y, f.q_z);
+      if (t != null && t > maxTilt) maxTilt = t;
+    }
+    return (
+      <div style={{ display: "grid", gap: 12, height: "100%", alignContent: "start" }}>
+        <BigReadout
+          value={tilt != null ? tilt.toFixed(1) : "—"}
+          unit="° tilt"
+          accent={accent}
+          sub={
+            <span>
+              SPIN <b className="vx-num" style={{ color: "var(--vx-fg)" }}>{spin !== undefined ? `${spin.toFixed(0)}°/s` : "—"}</b>
+              {Number.isFinite(maxTilt) ? <> · MAX <b className="vx-num" style={{ color: "var(--vx-blue-bright)" }}>{maxTilt.toFixed(1)}°</b></> : null}
+            </span>
+          }
+        />
+        <GaugeBar pct={tilt != null ? Math.min(1, tilt / 45) : 0} accent={accent} />
+        <div className="vx-label">GO &lt;5° · caution &lt;20° · scale 45°</div>
+      </div>
+    );
+  }
+
+  if (widgetId === "link.quality") {
+    const rssi = latest?.rssi_dbm;
+    const snr = latest?.snr_db;
+
+    // Frame rate + gap heuristic from recent frame spacing.
+    let rateHz: number | undefined, gapPct: number | undefined;
+    const ts: number[] = [];
+    for (let i = Math.max(0, frames.length - 60); i < frames.length; i++) {
+      const t = frames[i]?.t_ms;
+      if (typeof t === "number") ts.push(t);
+    }
+    if (ts.length > 5) {
+      const dts: number[] = [];
+      for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
+      const med = [...dts].sort((a, b) => a - b)[Math.floor(dts.length / 2)];
+      if (med > 0) {
+        rateHz = 1000 / med;
+        gapPct = Math.round((dts.filter((d) => d > med * 1.8).length / dts.length) * 100);
+      }
+    }
+
+    if (view === "plot") {
+      const hasSnr = frames.some((f) => typeof f.snr_db === "number");
+      return (
+        <div style={{ display: "grid", gap: 10, height: "100%", gridTemplateRows: hasSnr ? "1fr 1fr" : "1fr", minHeight: 0 }}>
+          <PlotLine fill frames={frames} yKey="rssi_dbm" yLabel="RSSI (dBm)" />
+          {hasSnr && <PlotLine fill frames={frames} yKey="snr_db" yLabel="SNR (dB)" color="var(--vx-go)" />}
+        </div>
+      );
+    }
+
+    const accent = typeof rssi === "number" ? (rssi < -110 ? "var(--vx-crit)" : rssi < -100 ? "var(--vx-caution)" : "var(--vx-go)") : undefined;
+    return (
+      <div style={{ display: "grid", gap: 12, height: "100%", alignContent: "start" }}>
+        <BigReadout value={typeof rssi === "number" ? String(Math.round(rssi)) : "—"} unit="dBm RSSI" accent={accent} />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+          <StatTile label="SNR" value={typeof snr === "number" ? snr.toFixed(1) : "—"} unit="dB" />
+          <StatTile label="RATE" value={rateHz !== undefined ? rateHz.toFixed(1) : "—"} unit="Hz" />
+          <StatTile label="GAPS" value={gapPct !== undefined ? String(gapPct) : "—"} unit="%" />
+        </div>
+      </div>
+    );
   }
 
   return (

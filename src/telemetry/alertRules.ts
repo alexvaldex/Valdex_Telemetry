@@ -20,11 +20,11 @@ export type AlertRule = {
 export const RULE_FIELDS = [
   "alt_m",
   "vel_mps",
-  "batt_v",
-  "rssi_dbm",
+  "batt_v", "current_a",
+  "rssi_dbm", "snr_db",
   "ax", "ay", "az",
   "gx", "gy", "gz",
-  "gps_sats",
+  "gps_sats", "gps_alt_m",
   "temp_c", "pressure_pa", "humidity_pct",
 ] as const;
 

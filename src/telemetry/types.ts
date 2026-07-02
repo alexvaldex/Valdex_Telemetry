@@ -8,8 +8,10 @@ export type TelemetryFrameV1 = {
 
   batt_v?: number;
   batt_pct?: number;
+  current_a?: number; // battery current draw
 
   rssi_dbm?: number;
+  snr_db?: number;    // radio link signal-to-noise
 
   // IMU (Tier 2)
   ax?: number; ay?: number; az?: number;
@@ -20,6 +22,7 @@ export type TelemetryFrameV1 = {
   lon?: number;
   gps_fix?: number;
   gps_sats?: number;
+  gps_alt_m?: number; // GPS altitude (MSL) — compare against baro alt_m (AGL)
 
   // Orientation (Tier 2)
   q_w?: number; q_x?: number; q_y?: number; q_z?: number;

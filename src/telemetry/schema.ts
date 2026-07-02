@@ -61,7 +61,11 @@ export function normalizeTelemetryFrame(raw: AnyObj, fallbackTms?: number): Tele
 
   // Battery + RSSI
   const batt_v = num(pick(raw, ["batt_v", "battery_v", "vbatt", "vbat"]));
+  const current_a =
+    num(pick(raw, ["current_a", "current", "amps", "i_batt", "batt_a"])) ??
+    (num(pick(raw, ["current_ma", "i_ma"])) !== undefined ? num(pick(raw, ["current_ma", "i_ma"]))! / 1000 : undefined);
   const rssi_dbm = num(pick(raw, ["rssi_dbm", "rssi", "rssiDbm"]));
+  const snr_db = num(pick(raw, ["snr_db", "snr", "snrDb"]));
 
   // IMU accel/gyro
   const ax = num(pick(raw, ["ax", "acc_x", "accel_x"]));
@@ -77,6 +81,9 @@ export function normalizeTelemetryFrame(raw: AnyObj, fallbackTms?: number): Tele
   const lon = num(pick(raw, ["lon", "lng", "longitude"]));
   const gps_fix = int(pick(raw, ["gps_fix", "fix", "gpsFix"]));
   const gps_sats = int(pick(raw, ["gps_sats", "sats", "satellites"]));
+  const gps_alt_m =
+    num(pick(raw, ["gps_alt_m", "gps_alt", "alt_gps", "gpsAlt"])) ??
+    (num(pick(raw, ["gps_alt_ft"])) !== undefined ? num(pick(raw, ["gps_alt_ft"]))! * 0.3048 : undefined);
 
   // Quaternion
   const q_w = num(pick(raw, ["q_w", "qw", "quat_w", "w"]));
@@ -110,12 +117,15 @@ export function normalizeTelemetryFrame(raw: AnyObj, fallbackTms?: number): Tele
     alt_m,
     vel_mps,
     batt_v,
+    current_a,
     rssi_dbm,
+    snr_db,
     ax, ay, az,
     gx, gy, gz,
     lat, lon,
     gps_fix,
     gps_sats,
+    gps_alt_m,
     q_w, q_x, q_y, q_z,
     temp_c,
     pressure_pa,

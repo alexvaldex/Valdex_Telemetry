@@ -11,9 +11,11 @@ export type WidgetId =
   | "flight.summary"
   | "pyro.panel"
   | "env.card"
-  | "checklist.panel";
+  | "checklist.panel"
+  | "tilt.spin"
+  | "link.quality";
 
-export type WidgetCategory = "Core" | "Navigation" | "IMU" | "Attitude" | "Viz" | "Flight" | "Safety" | "Sensors";
+export type WidgetCategory = "Core" | "Navigation" | "IMU" | "Attitude" | "Viz" | "Flight" | "Safety" | "Sensors" | "Link";
 
 export type WidgetView = "card" | "instrument" | "plot";
 
@@ -161,6 +163,28 @@ export const WIDGETS: WidgetDef[] = [
     defaultView: "card",
     views: ["card"],
     defaultTheme: { accent: "#24e08a" },
+  },
+  {
+    id: "tilt.spin",
+    name: "Tilt & Spin",
+    category: "Attitude",
+    requires: ["q_w", "q_x", "q_y", "q_z"],
+    hardwareHint: "Quaternion required. Off-vertical tilt (range-safety limit) + roll rate from gyro.",
+    defaultSize: { w: 4, h: 6 },
+    defaultView: "card",
+    views: ["card", "plot"],
+    defaultTheme: { accent: "#ffb02e" },
+  },
+  {
+    id: "link.quality",
+    name: "Link Quality",
+    category: "Link",
+    requires: ["rssi_dbm"],
+    hardwareHint: "Radio RSSI required (LoRa/RFD900/etc). Shows RSSI, SNR, frame rate, and gap heuristic.",
+    defaultSize: { w: 5, h: 7 },
+    defaultView: "card",
+    views: ["card", "plot"],
+    defaultTheme: { accent: "#57c1ff" },
   },
 ];
 

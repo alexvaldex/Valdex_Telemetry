@@ -10,7 +10,10 @@ const DROGUE_VEL = -20; // m/s
 const MAIN_DEPLOY_ALT_M = 300;
 const MAIN_VEL = -5; // m/s
 const TICK_MS = 50; // 20Hz emission rate
-const SIM_SPEED = 6; // sim-seconds per real-second, so a full flight plays out in ~20-30s
+// Sim-seconds per real-second. 1 = true real time (the mission clock matches
+// your wall clock; a full flight takes ~2¼ minutes like a real one would).
+// Bump temporarily if you want a fast demo run.
+const SIM_SPEED = 1;
 
 // Launch pad location (near a typical HPR range) + wind drift for recovery realism
 const PAD_LAT = 32.9903;   // ~ FAR / Mojave-ish
@@ -253,22 +256,23 @@ export class SimulatorConnection implements Connection {
     // Identity quaternion = nose straight up.
     let tiltDeg = 0.4 * Math.sin(this.simMs / 900); // slight breathing on the pad
     let tiltAxisDeg = 25;
+    let spinRateDps = 0; // roll rate about the long axis, deg/s (emitted as gy)
     switch (this.phase) {
       case "boost":
-        this.spinDeg += 220 * dtSec;             // fast roll under thrust
+        spinRateDps = 220;                       // fast roll under thrust
         tiltDeg = Math.min(4, dt * 2);           // small weathercock into the wind
         break;
       case "coast":
-        this.spinDeg += 50 * dtSec;              // roll decays after burnout
+        spinRateDps = 50;                        // roll decays after burnout
         tiltDeg = Math.min(26, 4 + dt * 1.6);    // gravity turn builds
         break;
       case "drogue":
-        this.spinDeg += 18 * dtSec;
+        spinRateDps = 18;
         tiltDeg = 14 * Math.sin(2 * Math.PI * 0.35 * dt); // pendulum swing under drogue
         tiltAxisDeg = 25 + dt * 30;                        // swing plane precesses
         break;
       case "main":
-        this.spinDeg += 6 * dtSec;
+        spinRateDps = 6;
         tiltDeg = 6 * Math.sin(2 * Math.PI * 0.5 * dt);   // gentler swing under main
         tiltAxisDeg = 25 + dt * 15;
         break;
@@ -277,6 +281,7 @@ export class SimulatorConnection implements Connection {
         tiltAxisDeg = 10;
         break;
     }
+    this.spinDeg += spinRateDps * dtSec;
     const axR = (tiltAxisDeg * Math.PI) / 180;
     const q = qMul(qAxis(Math.cos(axR), 0, Math.sin(axR), tiltDeg), qAxis(0, 1, 0, this.spinDeg % 360));
     const r4 = (n: number) => Math.round(n * 10000) / 10000;
@@ -291,13 +296,23 @@ export class SimulatorConnection implements Connection {
       ax: Math.round((ax + jitter()) * 1000) / 1000,
       ay: Math.round((ay + jitter()) * 1000) / 1000,
       az: Math.round((az + jitter()) * 1000) / 1000,
+      gx: Math.round((Math.random() - 0.5) * 4 * 100) / 100,
+      gy: Math.round((spinRateDps + (Math.random() - 0.5) * 6) * 100) / 100,
+      gz: Math.round((Math.random() - 0.5) * 4 * 100) / 100,
       lat: Math.round((lat + gpsJitter()) * 1e6) / 1e6,
       lon: Math.round((lon + gpsJitter()) * 1e6) / 1e6,
       gps_fix: 3,
       gps_sats: 9 + Math.round((Math.random() - 0.5) * 2),
+      gps_alt_m: Math.round((PAD_ALT_M + Math.max(0, alt) + (Math.random() - 0.5) * 6) * 10) / 10,
       temp_c: Math.round(temp_c * 10) / 10,
       pressure_pa: Math.round(pressure_pa),
       humidity_pct: Math.round(humidity_pct),
+      snr_db: Math.round(Math.max(1, 15 - Math.max(0, alt) / 250 + (Math.random() - 0.5) * 3) * 10) / 10,
+      current_a:
+        Math.round(
+          ((this.phase === "boost" ? 0.95 : this.phase === "coast" ? 0.6 : this.phase === "idle" ? 0.35 : 0.5) +
+            (Math.random() - 0.5) * 0.06) * 100
+        ) / 100,
       q_w: r4(q.w), q_x: r4(q.x), q_y: r4(q.y), q_z: r4(q.z),
       pyro_drogue_cont: this.drogueCont,
       pyro_main_cont: this.mainCont,
