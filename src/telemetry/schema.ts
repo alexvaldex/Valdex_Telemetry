@@ -91,6 +91,10 @@ export function normalizeTelemetryFrame(raw: AnyObj, fallbackTms?: number): Tele
   const q_y = num(pick(raw, ["q_y", "qy", "quat_y", "y"]));
   const q_z = num(pick(raw, ["q_z", "qz", "quat_z", "z"]));
 
+  // Vehicle / stream id
+  const vidRaw = pick<unknown>(raw, ["vid", "node", "addr", "src_id"]);
+  const vid = typeof vidRaw === "string" || typeof vidRaw === "number" ? vidRaw : undefined;
+
   // Environment: temperature (°C), pressure (Pa), humidity (%)
   const temp_c =
     num(pick(raw, ["temp_c", "temp", "temperature", "temperature_c", "tempC"])) ??
@@ -114,6 +118,7 @@ export function normalizeTelemetryFrame(raw: AnyObj, fallbackTms?: number): Tele
   const out: TelemetryFrameV1 = {
     v: 1,
     t_ms: t_ms!,
+    vid,
     alt_m,
     vel_mps,
     batt_v,

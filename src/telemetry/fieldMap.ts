@@ -12,6 +12,7 @@ export type FieldMapping = { source: string; target: string };
 /** V1 contract keys a user can map onto. */
 export const V1_TARGET_KEYS = [
   "t_ms",
+  "vid",
   "alt_m",
   "vel_mps",
   "batt_v", "current_a",

@@ -3,6 +3,8 @@ import type { TelemetryFrameV1 } from "./types";
 export function isTelemetryFrameV1(x: any): x is TelemetryFrameV1 {
   if (!x || x.v !== 1 || typeof x.t_ms !== "number") return false;
 
+  if (x.vid !== undefined && typeof x.vid !== "string" && typeof x.vid !== "number") return false;
+
   if (x.lat !== undefined && typeof x.lat !== "number") return false;
   if (x.lon !== undefined && typeof x.lon !== "number") return false;
 

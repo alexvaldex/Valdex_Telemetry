@@ -218,6 +218,7 @@ function downloadTextFile(filename: string, content: string, mime = "text/plain"
 function toCSV(frames: TelemetryFrameV1[]) {
   const keys: (keyof TelemetryFrameV1)[] = [
     "t_ms",
+    "vid",
     "alt_m",
     "vel_mps",
     "batt_v",
@@ -690,11 +691,40 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** ---------- Multi-vehicle streams ---------- */
+  // Distinct vehicle ids seen in the current source (one radio can carry
+  // several transmitters: booster + sustainer trackers, multiple rockets).
+  const sourceFrames = playback.mode === "playback" ? playback.frames : telemetry.frames;
+  const seenVids = useMemo(() => {
+    const s = new Set<string>();
+    for (const f of sourceFrames) {
+      if (f.vid !== undefined) s.add(String(f.vid));
+    }
+    return Array.from(s);
+  }, [sourceFrames]);
+
+  const [vehicleFilter, setVehicleFilter] = useState<string | null>(null);
+  // Auto-select the first vehicle when a second stream appears (mixed plots
+  // are meaningless), and drop a stale selection.
+  useEffect(() => {
+    if (!vehicleFilter && seenVids.length >= 2) setVehicleFilter(seenVids[0]);
+    else if (vehicleFilter && seenVids.length && !seenVids.includes(vehicleFilter)) setVehicleFilter(null);
+  }, [seenVids, vehicleFilter]);
+
+  // Frames without a vid are shared/system data — visible under any selection.
+  const matchVid = (f: TelemetryFrameV1) =>
+    !vehicleFilter || f.vid === undefined || String(f.vid) === vehicleFilter;
+
   /** Determine frames/latest to DISPLAY */
   const display = useMemo(() => {
     if (playback.mode === "playback") {
-      const frames = playback.frames;
-      const idx = clamp(playback.idx, 0, Math.max(0, frames.length - 1));
+      const all = playback.frames;
+      const idxAll = clamp(playback.idx, 0, Math.max(0, all.length - 1));
+      // Scrubber index addresses the full stream; show the filtered set up to it.
+      const frames = (vehicleFilter ? all.filter(matchVid) : all);
+      const upTo = all[idxAll]?.t_ms ?? 0;
+      let idx = frames.length - 1;
+      while (idx > 0 && frames[idx].t_ms > upTo) idx--;
       const latest = frames[idx];
       return {
         mode: "playback" as const,
@@ -707,8 +737,8 @@ export default function App() {
       };
     }
 
-    const frames = telemetry.frames ?? [];
-    const latest = telemetry.latest;
+    const frames = vehicleFilter ? (telemetry.frames ?? []).filter(matchVid) : (telemetry.frames ?? []);
+    const latest = frames.length ? frames[frames.length - 1] : undefined;
 
     if (!frames.length) {
       return { mode: "live" as const, frames, rawLines: telemetry.rawLines ?? [], latest, idx: -1, n: 0, t_ms: 0 };
@@ -737,7 +767,8 @@ export default function App() {
       n: frames.length,
       t_ms: latest?.t_ms ?? 0,
     };
-  }, [playback, telemetry, frozen, freezeIdx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playback, telemetry, frozen, freezeIdx, vehicleFilter]);
 
   const caps = useMemo(() => deriveCapabilities(display.latest), [display.latest]);
 
@@ -757,6 +788,7 @@ export default function App() {
     lastFrameAtRef.current = 0;
     dtMsWindowRef.current = [];
     lastCalloutTRef.current = -1;
+    setVehicleFilter(null);
 
     liveStore.reset();
 
@@ -1143,7 +1175,7 @@ export default function App() {
   }
 
   function exportFramesCSV() {
-    const frames = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    const frames = display.frames; // filtered to the selected vehicle
     const started = new Date(sessionStartRef.current);
     const stamp = started.toISOString().replace(/[:.]/g, "-").split("Z")[0];
     const filename = `valdex_frames_${stamp}.csv`;
@@ -1152,7 +1184,7 @@ export default function App() {
 
   /** Export the GPS track as KML for Google Earth / recovery planning. */
   function exportKML() {
-    const src = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    const src = display.frames; // filtered to the selected vehicle
     const gps = src.filter((f) => typeof f.lat === "number" && typeof f.lon === "number");
     if (!gps.length) {
       window.alert("No GPS data in this session to export.");
@@ -1195,7 +1227,7 @@ export default function App() {
 
   /** Export the GPS track as GPX — supported by nearly every GPS/mapping app. */
   function exportGPX() {
-    const src = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    const src = display.frames; // filtered to the selected vehicle
     const gps = src.filter((f) => typeof f.lat === "number" && typeof f.lon === "number");
     if (!gps.length) {
       window.alert("No GPS data in this session to export.");
@@ -1236,7 +1268,7 @@ ${trkpts}
 
   /** Open a print-ready mission report (browser Print → Save as PDF). */
   function openFlightReport() {
-    const frames = playback.mode === "playback" ? playback.frames : telemetry.frames;
+    const frames = display.frames; // filtered to the selected vehicle
     if (!frames.length) {
       window.alert("No flight data to report.");
       return;
@@ -1570,7 +1602,8 @@ ${trkpts}
       if (f.t_ms <= lastCalloutTRef.current) continue;
       if (typeof f.event === "string" && f.event.trim()) {
         lastCalloutTRef.current = f.t_ms;
-        if (voiceOn) speak(calloutText(f, globalUnits));
+        // Only call out events for the vehicle currently being tracked.
+        if (voiceOn && matchVid(f)) speak(calloutText(f, globalUnits));
       }
     }
     const last = frames[frames.length - 1];
@@ -2143,6 +2176,27 @@ ${trkpts}
               <div>
                 <div className="vx-brand-mark">TELEMETRY</div>
                 <div className="vx-brand-sub">Valdex · Ground Station · {modeChip}</div>
+                {seenVids.length >= 2 && (
+                  <div style={{ display: "flex", gap: 4, marginTop: 6 }} title="Multiple transmitters detected — pick which vehicle to track">
+                    {seenVids.map((v) => (
+                      <button
+                        key={v}
+                        className="vx-chip"
+                        onClick={() => setVehicleFilter(v)}
+                        style={{
+                          cursor: "pointer",
+                          fontSize: 10,
+                          letterSpacing: "0.08em",
+                          ...(vehicleFilter === v
+                            ? { borderColor: "var(--vx-blue)", color: "var(--vx-blue-bright)", background: "rgba(31,157,255,0.15)" }
+                            : { color: "var(--vx-fg-dim)" }),
+                        }}
+                      >
+                        ▲ {v}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

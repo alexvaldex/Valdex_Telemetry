@@ -63,6 +63,16 @@ export class SimulatorConnection implements Connection {
   private drogueEventSent = false;
   private spinDeg = 0; // accumulated roll about the long axis
 
+  // Separated booster — its own tracker stream (vid "BSTR") after staging.
+  private booster: {
+    phase: "coast" | "descent" | "landed";
+    alt: number;
+    vel: number;
+    posE: number;
+    posN: number;
+    pendingEvent?: string;
+  } | null = null;
+
   onLine(cb: (line: string) => void): () => void {
     this.lineListeners.add(cb);
     return () => this.lineListeners.delete(cb);
@@ -94,6 +104,7 @@ export class SimulatorConnection implements Connection {
     this.mainCont = 1;
     this.drogueEventSent = false;
     this.spinDeg = 0;
+    this.booster = null;
 
     this.setStatus("connected");
 
@@ -162,6 +173,17 @@ export class SimulatorConnection implements Connection {
           this.phaseStartVel = this.lastVel;
           alt = this.phaseStartAlt;
           vel = this.phaseStartVel;
+
+          // Staging: the spent booster separates and flies its own profile,
+          // transmitting on its own tracker (vid "BSTR").
+          this.booster = {
+            phase: "coast",
+            alt: this.lastAlt,
+            vel: this.lastVel * 0.85, // separation scrubs a little velocity
+            posE: this.posE,
+            posN: this.posN,
+            pendingEvent: "SEPARATION",
+          };
         }
         break;
       }
@@ -288,6 +310,7 @@ export class SimulatorConnection implements Connection {
 
     const frame: Record<string, unknown> = {
       v: 1,
+      vid: "SUST",
       t_ms: Math.round(this.simMs),
       alt_m: Math.round(Math.max(0, alt) * 100) / 100,
       vel_mps: Math.round(vel * 100) / 100,
@@ -325,5 +348,58 @@ export class SimulatorConnection implements Connection {
 
     const line = JSON.stringify(frame);
     this.lineListeners.forEach((cb) => cb(line));
+
+    this.tickBooster(dtSec);
+  }
+
+  /** Integrate + emit the separated booster's own tracker stream. */
+  private tickBooster(dtSec: number) {
+    const b = this.booster;
+    if (!b) return;
+
+    if (b.phase === "coast") {
+      b.vel -= 32 * dtSec; // draggier without the sustainer's nose
+      b.alt += b.vel * dtSec;
+      if (b.vel <= 0) {
+        b.phase = "descent";
+        b.pendingEvent = "APOGEE";
+      }
+    } else if (b.phase === "descent") {
+      b.vel = -22; // tumbling / drogue-less terminal-ish descent
+      b.alt += b.vel * dtSec;
+      b.posE += WIND_E_MPS * 0.7 * dtSec;
+      b.posN += WIND_N_MPS * 0.7 * dtSec;
+      if (b.alt <= 0) {
+        b.alt = 0;
+        b.vel = 0;
+        b.phase = "landed";
+        b.pendingEvent = "LANDING";
+      }
+    }
+    // landed: keep beaconing for recovery
+
+    const lat = PAD_LAT + b.posN / M_PER_DEG_LAT;
+    const lon = PAD_LON + b.posE / (M_PER_DEG_LAT * Math.cos((PAD_LAT * Math.PI) / 180));
+
+    const frame: Record<string, unknown> = {
+      v: 1,
+      vid: "BSTR",
+      t_ms: Math.round(this.simMs),
+      alt_m: Math.round(Math.max(0, b.alt) * 100) / 100,
+      vel_mps: Math.round(b.vel * 100) / 100,
+      batt_v: 7.9,
+      rssi_dbm: Math.round(-72 - Math.max(0, b.alt) / 400 + (Math.random() - 0.5) * 6),
+      snr_db: Math.round(Math.max(1, 10 - Math.max(0, b.alt) / 400 + (Math.random() - 0.5) * 2) * 10) / 10,
+      lat: Math.round((lat + (Math.random() - 0.5) * 0.00002) * 1e6) / 1e6,
+      lon: Math.round((lon + (Math.random() - 0.5) * 0.00002) * 1e6) / 1e6,
+      gps_fix: 3,
+      gps_sats: 8 + Math.round((Math.random() - 0.5) * 2),
+      gps_alt_m: Math.round((PAD_ALT_M + Math.max(0, b.alt) + (Math.random() - 0.5) * 6) * 10) / 10,
+    };
+    if (b.pendingEvent) {
+      frame.event = b.pendingEvent;
+      b.pendingEvent = undefined;
+    }
+    this.lineListeners.forEach((cb) => cb(JSON.stringify(frame)));
   }
 }

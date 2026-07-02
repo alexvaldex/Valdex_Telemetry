@@ -7,7 +7,8 @@ export type TelemetryState = {
   rawLines: string[];         // optional debug console
 };
 
-export const MAX_FRAMES = 2000;
+// Sized for a full real-time dual-stream flight: ~2¼ min at 20 Hz × 2 vehicles.
+export const MAX_FRAMES = 6000;
 export const MAX_RAW_LINES = 500;
 
 export function initialTelemetryState(): TelemetryState {

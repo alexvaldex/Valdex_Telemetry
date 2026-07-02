@@ -2,6 +2,10 @@ export type TelemetryFrameV1 = {
   v: 1;
   t_ms: number;
 
+  // Vehicle / stream id — lets one radio carry several transmitters
+  // (booster + sustainer trackers, multiple rockets on one frequency).
+  vid?: string | number;
+
   // Common / Tier 1
   alt_m?: number;
   vel_mps?: number;
