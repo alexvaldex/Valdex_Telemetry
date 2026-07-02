@@ -7,6 +7,8 @@
  * ingest pipeline used for live telemetry.
  */
 
+import { verifyAndStrip } from "./crc";
+
 export type FlightMeta = {
   id: string;
   name: string;
@@ -63,7 +65,10 @@ export function summarizeRawLines(rawLines: string[]): { frameCount: number; dur
 
   for (const line of rawLines) {
     try {
-      const o = JSON.parse(line);
+      // Lines may carry a *XXXX CRC suffix — corrupt ones don't count.
+      const { payload, crc } = verifyAndStrip(line);
+      if (crc === "bad") continue;
+      const o = JSON.parse(payload);
       if (o && o.v === 1 && typeof o.t_ms === "number") {
         frameCount++;
         if (firstT === undefined) firstT = o.t_ms;

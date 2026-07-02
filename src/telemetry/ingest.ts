@@ -1,8 +1,9 @@
-import { MAX_FRAMES, MAX_RAW_LINES, type TelemetryState } from "./store";
+import { MAX_EVENTS, MAX_FRAMES, MAX_RAW_LINES, type TelemetryState } from "./store";
 import { normalizeTelemetryFrame } from "./schema";
 import { isTelemetryFrameV1 } from "./validate";
 import { applyFieldMap, trackUnknownKeys } from "./fieldMap";
 import { verifyAndStrip } from "./crc";
+import { latchPadOrigin } from "./padOrigin";
 
 /** Wire-integrity counters for the current session (shown in Link Quality). */
 let crcOk = 0;
@@ -49,6 +50,16 @@ export function ingestLineInPlace(state: TelemetryState, line: string): void {
   state.frames.push(frame);
   if (state.frames.length > MAX_FRAMES) state.frames.shift();
   state.latest = frame;
+
+  // Latch flight events outside the ring buffer — they must survive wrap.
+  if (typeof frame.event === "string" && frame.event.trim() && state.events.length < MAX_EVENTS) {
+    state.events.push({ t_ms: frame.t_ms, event: frame.event.trim(), vid: frame.vid });
+  }
+
+  // Latch the session's pad origin from the first GPS fix.
+  if (typeof frame.lat === "number" && typeof frame.lon === "number") {
+    latchPadOrigin(frame.lat, frame.lon);
+  }
 }
 
 /** Pure variant (playback, tests): returns a new state, original untouched. */
@@ -58,6 +69,7 @@ export function ingestLine(state: TelemetryState, line: string): TelemetryState 
     latest: state.latest,
     frames: [...state.frames],
     rawLines: [...state.rawLines],
+    events: [...state.events],
   };
   ingestLineInPlace(next, line);
   return next;

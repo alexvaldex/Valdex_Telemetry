@@ -20,6 +20,9 @@ import { ingestLine, ingestLineInPlace } from "../telemetry/ingest";
 import { initialTelemetryState } from "../telemetry/store";
 import { computeFlightSummary } from "../widgets/flightSummary";
 import { crc16ccitt, appendChecksum, verifyAndStrip } from "../telemetry/crc";
+import { MAX_FRAMES, MAX_EVENTS } from "../telemetry/store";
+import { getPadOrigin, resetPadOrigin } from "../telemetry/padOrigin";
+import { summarizeRawLines } from "../telemetry/flightLog";
 import { tiltDegFromQuat } from "../widgets/renderers";
 import type { TelemetryFrameV1 } from "../telemetry/types";
 
@@ -177,6 +180,50 @@ describe("wire checksum (CRC-16/CCITT-FALSE)", () => {
     st = ingestLine(st, good.replace('"alt_m":10', '"alt_m":99')); // corrupt vs CRC
     st = ingestLine(st, JSON.stringify({ v: 1, t_ms: 2, alt_m: 20 })); // no CRC — fine
     expect(st.frames.map((f) => f.alt_m)).toEqual([10, 20]);
+  });
+});
+
+describe("ring-buffer survival (long pad wait)", () => {
+  it("latches events so LIFTOFF survives frame-buffer wrap", () => {
+    const st = initialTelemetryState();
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 1, event: "LIFTOFF", alt_m: 0 }));
+    // Flood the buffer well past capacity — the LIFTOFF frame scrolls out…
+    for (let i = 0; i < MAX_FRAMES + 50; i++) {
+      ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 10 + i, alt_m: i }));
+    }
+    expect(st.frames.length).toBe(MAX_FRAMES);
+    expect(st.frames.some((f) => f.event === "LIFTOFF")).toBe(false); // gone from the buffer
+    expect(st.events.some((e) => e.event === "LIFTOFF" && e.t_ms === 1)).toBe(true); // …but latched
+  });
+
+  it("caps the event latch", () => {
+    const st = initialTelemetryState();
+    for (let i = 0; i < MAX_EVENTS + 20; i++) {
+      ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: i, event: `E${i}` }));
+    }
+    expect(st.events.length).toBe(MAX_EVENTS);
+  });
+
+  it("latches the pad origin from the session's first GPS fix", () => {
+    resetPadOrigin();
+    const st = initialTelemetryState();
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 1, lat: 32.99, lon: -106.97 }));
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 2, lat: 33.05, lon: -106.9 })); // drifted later fix
+    expect(getPadOrigin()).toEqual({ lat: 32.99, lon: -106.97 });
+    resetPadOrigin();
+    expect(getPadOrigin()).toBeNull();
+  });
+});
+
+describe("flight log metadata with CRC-summed lines", () => {
+  it("summarizes checksummed recordings and skips corrupt lines", () => {
+    const mk = (t: number, alt: number) => appendChecksum(JSON.stringify({ v: 1, t_ms: t, alt_m: alt }));
+    const lines = [mk(0, 0), mk(1000, 50), mk(2000, 120), mk(3000, 80)];
+    lines.push(mk(4000, 999).replace('"alt_m":999', '"alt_m":111')); // corrupt vs its CRC
+    const s = summarizeRawLines(lines);
+    expect(s.frameCount).toBe(4);
+    expect(s.apogeeM).toBe(120);
+    expect(s.durationMs).toBe(3000);
   });
 });
 

@@ -1,18 +1,29 @@
 import type { TelemetryFrameV1 } from "./types";
 
+/** A flight event, latched outside the frame ring buffer: on a long pad wait
+    the buffer wraps and early frames (LIFTOFF!) scroll out — the mission
+    clock, timeline, and phase logic must never lose them. */
+export type TelemetryEvent = {
+  t_ms: number;
+  event: string;
+  vid?: string | number;
+};
+
 export type TelemetryState = {
   connected: boolean;
   latest?: TelemetryFrameV1;
   frames: TelemetryFrameV1[]; // ring buffer
   rawLines: string[];         // optional debug console
+  events: TelemetryEvent[];   // latched flight events (survive ring wrap)
 };
 
 // Sized for a full real-time dual-stream flight: ~2¼ min at 20 Hz × 2 vehicles.
 export const MAX_FRAMES = 6000;
 export const MAX_RAW_LINES = 500;
+export const MAX_EVENTS = 200;
 
 export function initialTelemetryState(): TelemetryState {
-  return { connected: false, frames: [], rawLines: [] };
+  return { connected: false, frames: [], rawLines: [], events: [] };
 }
 
 export function pushFrame(state: TelemetryState, frame: TelemetryFrameV1): TelemetryState {
@@ -30,4 +41,3 @@ export function pushRawLine(state: TelemetryState, line: string): TelemetryState
 
   return { ...state, rawLines };
 }
-

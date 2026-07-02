@@ -32,6 +32,7 @@ import { getFieldMap, saveFieldMap, getUnknownKeys, V1_TARGET_KEYS, type FieldMa
 import { speak } from "./audio/voice";
 import { loadAlertRules, saveAlertRules, ruleFires, RULE_FIELDS, type AlertRule } from "./telemetry/alertRules";
 import { setGhost } from "./telemetry/ghost";
+import { verifyAndStrip } from "./telemetry/crc";
 import { computeFlightSummary } from "./widgets/flightSummary";
 
 /** ---------- Types ---------- */
@@ -707,6 +708,17 @@ export default function App() {
     return () => window.clearInterval(t);
   }, [connStatus]);
 
+  /** Don't let an accidental tab close end a live session silently. */
+  useEffect(() => {
+    if (connStatus !== "connected") return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ""; // required for the browser confirm dialog
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [connStatus]);
+
   const fg = useMemo(() => autoTextColor(theme.bgB), [theme.bgB]);
   const chipFg = useMemo(() => autoTextColor("#1b2339"), []); // stable
 
@@ -1108,7 +1120,9 @@ export default function App() {
       if (!line.trim()) continue;
       rawLines.push(line);
       try {
-        const obj = JSON.parse(line);
+        const { payload, crc } = verifyAndStrip(line);
+        if (crc === "bad") continue; // corrupt on the wire — never replay it
+        const obj = JSON.parse(payload);
         if (obj && obj.v === 1 && typeof obj.t_ms === "number") frames.push(obj as TelemetryFrameV1);
       } catch {
         // ignore
@@ -1163,7 +1177,9 @@ export default function App() {
     const frames: TelemetryFrameV1[] = [];
     for (const line of rec.rawLines) {
       try {
-        const obj = JSON.parse(line.replace(/\*[0-9A-Fa-f]{4}$/, ""));
+        const { payload, crc } = verifyAndStrip(line);
+        if (crc === "bad") continue;
+        const obj = JSON.parse(payload);
         if (obj && obj.v === 1 && typeof obj.t_ms === "number") frames.push(obj as TelemetryFrameV1);
       } catch { /* skip */ }
     }
@@ -1244,6 +1260,30 @@ export default function App() {
       }
     }
 
+    // Latched session events (live mode): the ring buffer wraps on long pad
+    // waits and early event frames (LIFTOFF!) scroll out — without this the
+    // mission clock would reset to T− mid-flight. Latched events map to the
+    // nearest buffered frame for jump/freeze; dedupe below keeps the earliest.
+    if (playback.mode !== "playback") {
+      for (const le of telemetry.events) {
+        if (!matchVid(le as unknown as TelemetryFrameV1)) continue;
+        const label = le.event;
+        const upper = label.toUpperCase();
+        const id =
+          upper.includes("ARM") ? "ARMED" :
+          upper.includes("LIFT") ? "LIFTOFF" :
+          upper.includes("BURN") ? "BURNOUT" :
+          upper.includes("APOG") ? "APOGEE" :
+          upper.includes("DROG") ? "DROGUE" :
+          upper.includes("MAIN") ? "MAIN" :
+          upper.includes("LAND") ? "LANDING" :
+          "CUSTOM";
+        let idx = 0;
+        while (idx < frames.length - 1 && frames[idx].t_ms < le.t_ms) idx++;
+        events.push({ id: id as DerivedEvent["id"], label, idx, t_ms: le.t_ms });
+      }
+    }
+
     const hasAlt = frames.some((f) => typeof f.alt_m === "number");
     if (hasAlt) {
       const alt = frames.map((f) => (typeof f.alt_m === "number" ? (f.alt_m as number) : NaN));
@@ -1296,7 +1336,8 @@ export default function App() {
       });
 
     return Array.from(byId.values()).sort((a, b) => a.idx - b.idx);
-  }, [display.frames]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display.frames, telemetry.events, playback.mode, vehicleFilter]);
 
   function jumpToEvent(id: DerivedEvent["id"]) {
     const e = derivedEvents.find((x) => x.id === id);
@@ -1697,17 +1738,20 @@ ${trkpts}
 
   // Keep the ghost overlay aligned: shift its clock so its liftoff (or first
   // frame) lands on the current flight's liftoff (or first frame).
+  const liveLiftoffTms = derivedEvents.find((e) => e.id === "LIFTOFF")?.t_ms ?? null;
+  const firstFrameTms = display.frames[0]?.t_ms ?? null;
   useEffect(() => {
     if (!ghostFlight) {
       setGhost(null);
       return;
     }
-    const liveLift = derivedEvents.find((e) => e.id === "LIFTOFF")?.t_ms ?? display.frames[0]?.t_ms ?? 0;
+    // Re-shift only when the alignment anchor actually moves (not per tick).
+    const liveLift = liveLiftoffTms ?? firstFrameTms ?? 0;
     const ghostLift = extractLiftoffTms(ghostFlight.frames) ?? ghostFlight.frames[0]?.t_ms ?? 0;
     const offset = liveLift - ghostLift;
     setGhost({ name: ghostFlight.name, frames: ghostFlight.frames.map((f) => ({ ...f, t_ms: f.t_ms + offset })) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ghostFlight, derivedEvents, display.frames.length === 0]);
+  }, [ghostFlight, liveLiftoffTms, firstFrameTms === null]);
 
     // GO / NO-GO readiness board.
   type GoState = "go" | "caution" | "crit" | "nodata";
@@ -2388,7 +2432,7 @@ ${trkpts}
               {missionClock.holding ? "HOLD " : ""}{missionClock.label}
             </div>
             {/* Countdown controls — only before real liftoff */}
-            {!derivedEvents.some((e) => e.id === "LIFTOFF") && (
+            {playback.mode !== "playback" && !derivedEvents.some((e) => e.id === "LIFTOFF") && (
               <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
                 {countdown.mode === "idle" ? (
                   <button className="vx-tbtn" onClick={startCountdown} title="Start a T-minus countdown">SET COUNT</button>

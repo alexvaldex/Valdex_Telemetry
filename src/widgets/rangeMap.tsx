@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import type { TelemetryFrameV1 } from "../telemetry/types";
 import type { UnitSystem } from "../units";
+import { getPadOrigin } from "../telemetry/padOrigin";
 
 const M_PER_DEG_LAT = 111_320;
 const M_TO_FT = 3.280839895;
@@ -34,9 +35,19 @@ export function RangeMapWidget(props: { frames: TelemetryFrameV1[]; latest?: Tel
     const fixes = props.frames.filter((f) => typeof f.lat === "number" && typeof f.lon === "number");
     if (!fixes.length) return null;
 
-    const pad = fixes[0];
-    const lat0 = pad.lat as number;
-    const lon0 = pad.lon as number;
+    // Pad origin: prefer the session latch — "first fix in the buffer" drifts
+    // once the ring buffer wraps on a long pad wait, corrupting recovery
+    // bearing/distance. Only trust the latch if it's plausibly this flight's
+    // site (within ~10 km of the buffered track, so replayed logs from other
+    // ranges aren't skewed by the live session's latch).
+    const firstFix = fixes[0];
+    const latch = getPadOrigin();
+    const nearLatch =
+      latch &&
+      Math.abs((firstFix.lat as number) - latch.lat) * M_PER_DEG_LAT < 10_000 &&
+      Math.abs((firstFix.lon as number) - latch.lon) * M_PER_DEG_LAT < 10_000;
+    const lat0 = nearLatch ? latch.lat : (firstFix.lat as number);
+    const lon0 = nearLatch ? latch.lon : (firstFix.lon as number);
     const mPerDegLon = M_PER_DEG_LAT * Math.cos((lat0 * Math.PI) / 180);
     const toPt = (f: TelemetryFrameV1): Pt => ({
       e: ((f.lon as number) - lon0) * mPerDegLon,

@@ -1,5 +1,6 @@
 import { initialTelemetryState, type TelemetryState } from "./store";
 import { ingestLineInPlace, resetCrcStats } from "./ingest";
+import { resetPadOrigin } from "./padOrigin";
 
 export type LiveState = TelemetryState & {
   connected: boolean;
@@ -12,7 +13,14 @@ function snapshotOf(state: TelemetryState, connected: boolean, packetsPerSec: nu
   // Copy the arrays: `pending` is mutated in place on the hot path, and React
   // consumers need referential changes per flush. Copying at the ~16 Hz flush
   // instead of per line keeps ingest allocation-free at high frame rates.
-  return { connected, packetsPerSec, latest: state.latest, frames: state.frames.slice(), rawLines: state.rawLines.slice() };
+  return {
+    connected,
+    packetsPerSec,
+    latest: state.latest,
+    frames: state.frames.slice(),
+    rawLines: state.rawLines.slice(),
+    events: state.events.slice(),
+  };
 }
 
 class LiveStore {
