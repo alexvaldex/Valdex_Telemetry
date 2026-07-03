@@ -56,11 +56,13 @@ body,
 body {
   color: var(--vx-fg);
   font-family: var(--vx-font-display);
-  /* Layered starfield-ish deep-space backdrop */
+  /* Layered starfield-ish deep-space backdrop. --vx-app-bg-top/bottom are set
+     from JS (App Background picker in Settings); these hex defaults are the
+     fallback when the user hasn't customized it. */
   background:
     radial-gradient(1200px 700px at 15% -10%, rgba(31, 157, 255, 0.08), transparent 60%),
     radial-gradient(1000px 800px at 110% 10%, rgba(36, 224, 138, 0.05), transparent 55%),
-    linear-gradient(180deg, #05070e 0%, #04060c 100%);
+    linear-gradient(180deg, var(--vx-app-bg-top, #05070e) 0%, var(--vx-app-bg-bottom, #04060c) 100%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;

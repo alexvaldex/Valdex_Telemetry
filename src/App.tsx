@@ -87,6 +87,7 @@ type ThemeSettings = {
   bgA: string; // shell gradient start
   bgB: string; // shell gradient end
   consoleBg: string; // raw console background
+  appBg?: string; // outer app/page background (behind everything) — undefined = default
 };
 
 
@@ -293,6 +294,16 @@ function hexToRgb(hexInput: unknown): { r: number; g: number; b: number } | null
   return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
 }
 
+/** Darken a hex color toward black by `amount` (0–1) — used to derive the
+    bottom stop of the app background gradient from a single user-picked color. */
+function darkenHex(hexInput: unknown, amount: number): string {
+  const rgb = hexToRgb(hexInput);
+  if (!rgb) return "#04060c";
+  const f = 1 - amount;
+  const to2 = (v: number) => Math.round(Math.max(0, Math.min(255, v)) * f).toString(16).padStart(2, "0");
+  return `#${to2(rgb.r)}${to2(rgb.g)}${to2(rgb.b)}`;
+}
+
 function relativeLuminance(hexInput: unknown): number {
   const rgb = hexToRgb(hexInput);
   if (!rgb) return 0; // treat invalid as dark
@@ -351,40 +362,16 @@ function Readout(props: { k: string; v: { value: string; unit: string }; peak?: 
 }
 
 function MissionLogo() {
-  // VX monogram — vector recreation of the Valdex mark: an angular "V", an "X"
-  // whose forward stroke sweeps up into a swept blade point, and a thin orbital
-  // swoosh sweeping underneath. Monochrome via a metallic vertical gradient.
+  // Renders the actual app icon file (public/vx-logo.svg) so the header and
+  // the OS-level app icon/favicon are always the exact same "VX Rocketry" artwork.
   return (
-    <svg width="60" height="44" viewBox="0 0 240 170" fill="none" aria-label="VX Telemetry" role="img">
-      <defs>
-        <linearGradient id="vxMetal" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#eef3fb" />
-          <stop offset="0.55" stopColor="#aab6ce" />
-          <stop offset="1" stopColor="#6b7690" />
-        </linearGradient>
-        <linearGradient id="vxBlade" x1="0" y1="1" x2="1" y2="0">
-          <stop offset="0" stopColor="#8994ad" />
-          <stop offset="0.7" stopColor="#dfe7f4" />
-          <stop offset="1" stopColor="#ffffff" />
-        </linearGradient>
-      </defs>
-
-      {/* orbital swoosh */}
-      <path
-        d="M8,136 C66,170 152,172 214,140 C154,156 78,154 26,138 Z"
-        fill="url(#vxMetal)"
-        opacity="0.8"
-      />
-
-      {/* V */}
-      <path d="M20,34 L44,34 L74,110 L104,34 L128,34 L74,150 Z" fill="url(#vxMetal)" />
-
-      {/* X — back stroke */}
-      <path d="M150,34 L172,34 L214,150 L192,150 Z" fill="url(#vxMetal)" />
-
-      {/* X — forward stroke swept into a blade point */}
-      <path d="M116,150 L140,150 L236,16 L206,30 Z" fill="url(#vxBlade)" />
-    </svg>
+    <img
+      src="/vx-logo.svg"
+      alt="VX Rocketry"
+      width={44}
+      height={44}
+      style={{ display: "block", borderRadius: 9, border: "1px solid var(--vx-line)", flex: "0 0 auto" }}
+    />
   );
 }
 
@@ -544,6 +531,20 @@ export default function App() {
     setTheme(DEFAULT_THEME);
     localStorage.setItem("vx.theme", JSON.stringify(DEFAULT_THEME));
   }
+
+  // Outer app background (behind the whole console, not just the dashboard
+  // shell) — a single user-picked color, with a darker auto-derived bottom
+  // stop so it keeps the same subtle vertical gradient feel.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    if (theme.appBg) {
+      root.setProperty("--vx-app-bg-top", theme.appBg);
+      root.setProperty("--vx-app-bg-bottom", darkenHex(theme.appBg, 0.45));
+    } else {
+      root.removeProperty("--vx-app-bg-top");
+      root.removeProperty("--vx-app-bg-bottom");
+    }
+  }, [theme.appBg]);
 
   /** Vehicle (3D model + flight config) modal */
   const [vehicleOpen, setVehicleOpen] = useState(false);
@@ -3921,6 +3922,19 @@ function SettingsModal(props: {
                 value={props.theme.consoleBg}
                 onChange={(v) => props.onTheme({ consoleBg: v })}
                 onReset={() => props.onTheme({ consoleBg: DEFAULT_THEME.consoleBg })}
+              />
+            </div>
+
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--vx-line)" }}>
+              <div style={{ fontWeight: 900, marginBottom: 4 }}>App Background</div>
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 10 }}>
+                The color behind the whole console, not just the dashboard panel. Pick a dark shade for readability.
+              </div>
+              <ColorTile
+                label="Background Color"
+                value={props.theme.appBg ?? "#05070e"}
+                onChange={(v) => props.onTheme({ appBg: v })}
+                onReset={() => props.onTheme({ appBg: undefined })}
               />
             </div>
 
