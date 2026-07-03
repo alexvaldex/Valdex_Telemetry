@@ -5,3 +5,4 @@ dist/
 # Tauri
 src-tauri/target/
 src-tauri/gen/
+official logo.png

@@ -362,15 +362,15 @@ function Readout(props: { k: string; v: { value: string; unit: string }; peak?: 
 }
 
 function MissionLogo() {
-  // Renders the actual app icon file (public/vx-logo.svg) so the header and
-  // the OS-level app icon/favicon are always the exact same "VX Rocketry" artwork.
+  // Renders the user-supplied official logo file (public/vx-logo.png) so the
+  // header and the OS-level app icon/favicon are the exact same artwork.
   return (
     <img
-      src="/vx-logo.svg"
+      src="/vx-logo.png"
       alt="VX Rocketry"
       width={44}
       height={44}
-      style={{ display: "block", borderRadius: 9, border: "1px solid var(--vx-line)", flex: "0 0 auto" }}
+      style={{ display: "block", objectFit: "contain", flex: "0 0 auto" }}
     />
   );
 }
