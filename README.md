@@ -74,6 +74,23 @@ core loop for altitude-targeting competitions. Aliases: `speedbrake_pct`,
 Every widget has an **info (i) button** with wiring and troubleshooting help,
 and a Learn-more link you point at your own tutorials site (Settings → Tools).
 
+## Ingest formats & sharing
+
+VX isn't limited to its own NDJSON. Pick a **data format** (Serial toolbar):
+NDJSON, **CSV** (a header row is auto-mapped to the contract — most altimeter/
+logger exports just work), or **key=value**. Anything unmapped is fixable in
+**Field Map**.
+
+**Events are gated properly.** Liftoff is accelerometer-gated, apogee is a
+debounced fused-velocity zero-crossing (not fooled by a lone baro spike), and a
+baro+accel Kalman filter yields a smoothed altitude and the velocity most
+flight computers don't transmit.
+
+**Share a flight.** From the Flight Log, **Share** produces a self-contained
+HTML replay (interactive, works offline — send it or host it) or a compact link
+that carries the flight in its own URL and opens straight into playback. No
+server, nothing uploaded.
+
 Optional wire integrity: append an NMEA-style checksum — `{...}*1A2B` where
 the hex digits are **CRC-16/CCITT-FALSE** over the UTF-8 JSON text before the
 `*`. Corrupt lines are dropped and counted (Link Quality widget). Optional

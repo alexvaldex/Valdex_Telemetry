@@ -417,3 +417,38 @@ describe("device profiles (multi-format ingest)", () => {
     expect(obj.alt_m).toBe(10);
   });
 });
+
+describe("shareable flight replay", () => {
+  const frames: TelemetryFrameV1[] = [];
+  for (let t = 0; t <= 4000; t += 100) {
+    const alt = t <= 2000 ? (t / 2000) * 200 : Math.max(0, 200 * (1 - (t - 2000) / 2000));
+    const f: TelemetryFrameV1 = { v: 1, t_ms: t, alt_m: alt, vel_mps: 10, lat: 28.6 + t * 1e-6, lon: -80.6 };
+    if (t === 100) f.event = "LIFTOFF";
+    if (t === 2000) f.event = "APOGEE";
+    frames.push(f);
+  }
+
+  it("builds a self-contained HTML replay (no external resource refs)", async () => {
+    const { toShareFlight, buildReplayHTML } = await import("../telemetry/shareFlight");
+    const html = buildReplayHTML(toShareFlight("Test", frames));
+    expect(html).toContain("<!doctype html>");
+    // No external script/style/img src other than the footer GitHub link.
+    const externals = html.match(/src=["']https?:\/\//g) || [];
+    expect(externals.length).toBe(0);
+  });
+
+  it("link round-trips the flight through the hash", async () => {
+    (globalThis as any).location = { origin: "https://vx.test", pathname: "/" };
+    const { toShareFlight, encodeShareLink, decodeShareLink, shareFlightToLines } = await import("../telemetry/shareFlight");
+    const sf = toShareFlight("RT", frames);
+    const link = await encodeShareLink(sf);
+    expect(link.url).toContain("#flight=");
+    const decoded = await decodeShareLink("#flight=" + link.url.split("flight=")[1]);
+    expect(decoded).not.toBeNull();
+    expect(decoded!.pts.length).toBe(sf.pts.length);
+    const lines = shareFlightToLines(decoded!);
+    expect(JSON.parse(lines[0]).v).toBe(1);
+    const apo = Math.max(...decoded!.pts.map((p) => p.alt ?? 0));
+    expect(apo).toBeCloseTo(200, 0);
+  });
+});

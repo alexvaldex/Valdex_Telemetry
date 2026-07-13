@@ -36,6 +36,15 @@ import {
 import type { Model3D, UpAxis } from "./widgets/rocketModel";
 import { getFieldMap, saveFieldMap, getUnknownKeys, V1_TARGET_KEYS, type FieldMapping } from "./telemetry/fieldMap";
 import { DEVICE_PROFILES, loadDeviceProfile, setDeviceProfile } from "./telemetry/deviceProfiles";
+import {
+  flightToFrames,
+  toShareFlight,
+  buildReplayHTML,
+  encodeShareLink,
+  decodeShareLink,
+  shareFlightToLines,
+  type ShareFlight,
+} from "./telemetry/shareFlight";
 import { speak } from "./audio/voice";
 import { loadAlertRules, saveAlertRules, ruleFires, RULE_FIELDS, type AlertRule } from "./telemetry/alertRules";
 import { setGhost } from "./telemetry/ghost";
@@ -986,6 +995,21 @@ export default function App() {
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A #flight=… share link opens straight into playback.
+  useEffect(() => {
+    if (!location.hash.includes("flight=")) return;
+    decodeShareLink(location.hash)
+      .then((sf) => {
+        if (sf && sf.pts.length) {
+          loadSharedFlight(sf);
+          pushAlert({ id: "shared-flight", level: "info", title: "Shared flight loaded", detail: `${sf.name} — playing back from a shared link` });
+        }
+        history.replaceState(null, "", location.pathname + location.search);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (connStatus !== "connected") return;
     lastCheckpointCountRef.current = 0;
@@ -1057,6 +1081,9 @@ export default function App() {
 
   /** Active device profile (data-format parser). Restored from storage once. */
   const [deviceProfile, setDeviceProfileState] = useState<string>(() => loadDeviceProfile());
+
+  /** Share dialog data (an archived flight prepped for HTML/link sharing). */
+  const [shareData, setShareData] = useState<ShareFlight | null>(null);
 
   /** Mission overview: full launch-profile model, or the simple bar timeline. */
   const [missionView, setMissionView] = useState<"model" | "timeline">(() => {
@@ -1550,6 +1577,20 @@ export default function App() {
     } catch (e) {
       console.error("[flightLog] delete failed", e);
     }
+  }
+
+  /** Open the Share dialog for an archived flight. */
+  async function shareFlightFromLog(id: string) {
+    const rec = await getFlight(id);
+    if (!rec) return;
+    const frames = flightToFrames(rec.rawLines);
+    if (!frames.length) { window.alert("That flight has no parseable frames to share."); return; }
+    setShareData(toShareFlight(rec.name, frames));
+  }
+
+  /** Load a shared flight (from a #flight= link) straight into playback. */
+  async function loadSharedFlight(sf: ShareFlight) {
+    loadLinesIntoPlayback(shareFlightToLines(sf), sf.name);
   }
 
   function exitPlayback() {
@@ -3411,6 +3452,10 @@ ${trkpts}
             else if (fmt === "kml") exportKML();
             else if (fmt === "gpx") exportGPX();
             else if (fmt === "report") openFlightReport();
+            else if (fmt === "share") {
+              const sf = toShareFlight("VX flight", display.frames);
+              downloadTextFile("vx-flight-replay.html", buildReplayHTML(sf), "text/html");
+            }
             setExportOpen(false);
           }}
         />
@@ -3476,8 +3521,12 @@ ${trkpts}
           onLoad={loadFlightFromLog}
           onOverlay={overlayFlightFromLog}
           onDelete={deleteFlightFromLog}
+          onShare={shareFlightFromLog}
         />
       )}
+
+      {/* Share dialog — download an HTML replay or copy a shareable link */}
+      {shareData && <ShareModal flight={shareData} onClose={() => setShareData(null)} />}
     </div>
   );
 }
@@ -3489,6 +3538,7 @@ function FlightLogModal(props: {
   onLoad: (id: string) => void;
   onOverlay: (id: string) => void;
   onDelete: (id: string) => void;
+  onShare: (id: string) => void;
 }) {
   function fmtDur(ms?: number) {
     if (typeof ms !== "number") return "—";
@@ -3537,6 +3587,7 @@ function FlightLogModal(props: {
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button className="vx-btn vx-btn-primary" onClick={() => props.onLoad(f.id)}>Load</button>
+                      <button className="vx-btn" onClick={() => props.onShare(f.id)} title="Share this flight — download an HTML replay or copy a link">Share</button>
                       <button className="vx-btn" onClick={() => props.onOverlay(f.id)} title="Draw this flight as a dashed reference trace on every plot, liftoff-aligned">Overlay</button>
                       <button
                         className="vx-btn vx-btn-danger"
@@ -3550,6 +3601,95 @@ function FlightLogModal(props: {
               </div>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** ---------- ShareModal ----------
+ * Turn an archived flight into a shareable artifact: a self-contained HTML
+ * replay (works offline, send it anywhere) or a compact link that opens VX
+ * straight into playback. No backend — the link carries the (downsampled,
+ * gzipped) flight in its hash. */
+function ShareModal(props: { flight: ShareFlight; onClose: () => void }) {
+  const [link, setLink] = useState<{ url: string; chars: number; tooBig: boolean } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [linkErr, setLinkErr] = useState(false);
+
+  useEffect(() => {
+    encodeShareLink(props.flight).then(setLink).catch(() => setLinkErr(true));
+  }, [props.flight]);
+
+  function downloadHTML() {
+    const html = buildReplayHTML(props.flight);
+    const safe = props.flight.name.replace(/[^\w.-]+/g, "_").slice(0, 40) || "flight";
+    downloadTextFile(`${safe}-replay.html`, html, "text/html");
+  }
+
+  async function copyLink() {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      window.prompt("Copy this link:", link.url);
+    }
+  }
+
+  return (
+    <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
+      <div className="vx-modal vx-help-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="vx-settings-head">
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>Share flight</div>
+            <div className="vx-help" style={{ marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{props.flight.name}</div>
+          </div>
+          <button className="vx-xbtn" onClick={props.onClose}>×</button>
+        </div>
+
+        <div className="vx-settings-body">
+          <div className="vx-card">
+            <div className="vx-card-title">Replay file (recommended)</div>
+            <div className="vx-help">
+              A self-contained HTML page with an interactive replay — charts, ground track, event
+              timeline, and a scrubber. Works offline; host it or send the file. Best for any flight.
+            </div>
+            <button className="vx-btn vx-btn-primary" style={{ marginTop: 10 }} onClick={downloadHTML}>
+              Download replay (HTML)
+            </button>
+          </div>
+
+          <div className="vx-card">
+            <div className="vx-card-title">Shareable link</div>
+            <div className="vx-help">
+              The flight is packed into the link itself (no server). Great for a quick forum or chat
+              share; long flights are downsampled to fit.
+            </div>
+            {linkErr ? (
+              <div style={{ fontSize: 12, color: "var(--vx-caution)", marginTop: 10 }}>Couldn't build a link on this browser — use the HTML file.</div>
+            ) : !link ? (
+              <div className="vx-help" style={{ marginTop: 10 }}>Building link…</div>
+            ) : (
+              <>
+                <input className="vx-input" style={{ marginTop: 10 }} readOnly value={link.url} onFocus={(e) => e.currentTarget.select()} />
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+                  <button className="vx-btn" onClick={copyLink}>{copied ? "Copied ✓" : "Copy link"}</button>
+                  <span className="vx-help">{(link.chars / 1000).toFixed(1)} kB{link.tooBig ? " · long — the HTML file is more reliable" : ""}</span>
+                </div>
+                {link.tooBig && (
+                  <div style={{ fontSize: 12, color: "var(--vx-caution)", marginTop: 8 }}>
+                    This link is long and some apps may truncate it. Prefer the HTML replay for this flight.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="vx-settings-foot">
+          <button className="vx-btn" onClick={props.onClose}>Done</button>
         </div>
       </div>
     </div>
@@ -4706,7 +4846,7 @@ function ToggleRow(props: { label: string; hint?: string; on: boolean; onToggle:
 
 /** ---------- ExportModal ----------
  * Single export entry point: pick a format, then write the file. */
-type ExportFormat = "jsonl" | "csv" | "kml" | "gpx" | "report";
+type ExportFormat = "jsonl" | "csv" | "kml" | "gpx" | "report" | "share";
 
 function ExportModal(props: {
   frameCount: number;
@@ -4718,6 +4858,7 @@ function ExportModal(props: {
   const [fmt, setFmt] = useState<ExportFormat>("jsonl");
 
   const OPTIONS: Array<{ id: ExportFormat; name: string; ext: string; desc: string; disabled?: boolean; note?: string }> = [
+    { id: "share", name: "Shareable replay", ext: ".html", desc: "Self-contained interactive replay — send it or host it. Works offline." },
     { id: "jsonl", name: "Raw telemetry", ext: ".jsonl", desc: `Every received line, exactly as it arrived (${props.rawCount} lines).` },
     { id: "csv", name: "Frames", ext: ".csv", desc: `Parsed frames as a spreadsheet (${props.frameCount} frames).` },
     {
