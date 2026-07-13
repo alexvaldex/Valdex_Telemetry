@@ -25,6 +25,7 @@ import { getPadOrigin, resetPadOrigin } from "../telemetry/padOrigin";
 import { summarizeRawLines } from "../telemetry/flightLog";
 import { DEFAULT_SIM_PROFILE, simulatePreflight, windEN, airDensity, type SimProfile } from "../telemetry/flightSim";
 import { tiltDegFromQuat } from "../widgets/renderers";
+import { detectFlightEvents, fuseAltVel, accelUnitDivisor } from "../telemetry/fusion";
 import type { TelemetryFrameV1 } from "../telemetry/types";
 
 describe("schema normalization", () => {
@@ -296,5 +297,79 @@ describe("flight summary", () => {
     const s = computeFlightSummary(frames);
     expect(s.apogeeM).toBeCloseTo(100, 1);
     expect(s.totalS).toBeGreaterThan(15);
+  });
+});
+
+describe("sensor fusion + event gating", () => {
+  // Build a synthetic flight: 2 s pad, boost to apogee, ballistic-ish descent.
+  function synthFlight(opts: { padBaroNoise?: number; spike?: boolean } = {}): TelemetryFrameV1[] {
+    const frames: TelemetryFrameV1[] = [];
+    const dt = 0.05; // 20 Hz
+    const g = 9.80665;
+    const padAlt = 1400;
+    let t = 0;
+    let alt = 0, vel = 0;
+    // Pad: 2 s at rest, ~1g, optional baro noise.
+    for (let i = 0; i < 40; i++) {
+      const noise = opts.padBaroNoise ? (Math.sin(i) * opts.padBaroNoise) : 0;
+      frames.push({ v: 1, t_ms: Math.round(t * 1000), alt_m: 0 + noise, ax: 0, ay: 0, az: g });
+      t += dt;
+    }
+    // Boost 1.5 s at 6g total (≈ 5g net up).
+    for (let i = 0; i < 30; i++) {
+      const aUp = 5 * g;
+      vel += aUp * dt; alt += vel * dt;
+      frames.push({ v: 1, t_ms: Math.round(t * 1000), alt_m: alt, ax: 0, ay: 0, az: 6 * g });
+      t += dt;
+    }
+    // Coast to apogee then fall — pure ballistic under gravity, ~1g? use ~0 (freefall).
+    for (let i = 0; i < 400; i++) {
+      vel += -g * dt; alt += vel * dt;
+      if (alt < 0) { alt = 0; vel = 0; }
+      let baro = alt;
+      // Inject one spurious high baro spike well after apogee.
+      if (opts.spike && i === 250) baro = alt + 5000;
+      frames.push({ v: 1, t_ms: Math.round(t * 1000), alt_m: baro, ax: 0, ay: 0, az: 0.02 * g });
+      t += dt;
+      if (alt <= 0 && i > 50) break;
+    }
+    return frames;
+  }
+
+  it("detects accel units (m/s²) from pad rest", () => {
+    const frames = synthFlight();
+    expect(accelUnitDivisor(frames)).toBeCloseTo(9.80665, 1);
+  });
+
+  it("liftoff is accel-gated and ignores pad baro noise", () => {
+    const frames = synthFlight({ padBaroNoise: 3 }); // ±3 m of pad baro jitter
+    const fe = detectFlightEvents(frames);
+    // Liftoff must land in the boost window (after the 40 pad samples), not on
+    // a noisy pad sample.
+    expect(fe.liftoffIdx).toBeGreaterThanOrEqual(40);
+    expect(fe.liftoffIdx).toBeLessThan(72);
+  });
+
+  it("apogee is debounced and not fooled by a lone baro spike", () => {
+    const clean = detectFlightEvents(synthFlight());
+    const spiked = detectFlightEvents(synthFlight({ spike: true }));
+    // The naive global-max would jump to the +5000 m spike sample; the fused
+    // velocity zero-cross should put apogee near the real one in both cases.
+    const tClean = synthFlight()[clean.apogeeIdx].t_ms;
+    const tSpiked = synthFlight({ spike: true })[spiked.apogeeIdx].t_ms;
+    expect(Math.abs(tSpiked - tClean)).toBeLessThan(1500); // within 1.5 s
+  });
+
+  it("fused velocity is positive during boost and negative after apogee", () => {
+    const frames = synthFlight();
+    const { velF } = fuseAltVel(frames);
+    const fe = detectFlightEvents(frames);
+    expect(velF[fe.liftoffIdx + 10]).toBeGreaterThan(0);
+    expect(velF[fe.apogeeIdx + 20]).toBeLessThan(0);
+  });
+
+  it("averaged pad baseline is stable under noise", () => {
+    const fe = detectFlightEvents(synthFlight({ padBaroNoise: 4 }));
+    expect(Math.abs(fe.baselineAlt)).toBeLessThan(3); // near 0, not a single noisy sample
   });
 });

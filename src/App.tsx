@@ -5,6 +5,7 @@ import { deriveCapabilities } from "./telemetry/capabilities";
 import type { TelemetryFrameV1 } from "./telemetry/types";
 import { getPadOrigin } from "./telemetry/padOrigin";
 import { tiltDegFromQuat } from "./telemetry/attitude";
+import { detectFlightEvents } from "./telemetry/fusion";
 
 import { WIDGETS, WIDGETS_BY_CATEGORY, type WidgetId } from "./widgets/registry";
 import { WIDGET_HELP, learnMoreUrl } from "./widgets/widgetHelp";
@@ -1618,46 +1619,23 @@ export default function App() {
       }
     }
 
+    // Fused, gated event detection (accel-gated liftoff, debounced apogee via
+    // fused velocity, averaged pad-zero, at-rest landing). Firmware-sent events
+    // above always win — these fill in only what the vehicle didn't report.
     const hasAlt = frames.some((f) => typeof f.alt_m === "number");
     if (hasAlt) {
-      const alt = frames.map((f) => (typeof f.alt_m === "number" ? (f.alt_m as number) : NaN));
-      const baseIdx = alt.findIndex((a) => Number.isFinite(a));
-      const baseline = baseIdx >= 0 ? alt[baseIdx] : 0;
-
-      let liftoffIdx = -1;
-      for (let i = 0; i < alt.length; i++) {
-        if (Number.isFinite(alt[i]) && alt[i] > baseline + 2) {
-          liftoffIdx = i;
-          break;
-        }
+      const fe = detectFlightEvents(frames);
+      if (fe.liftoffIdx >= 0 && !events.some((e) => e.id === "LIFTOFF")) {
+        events.push({ id: "LIFTOFF", label: "LIFTOFF (derived)", idx: fe.liftoffIdx, t_ms: frames[fe.liftoffIdx].t_ms });
       }
-      if (liftoffIdx >= 0 && !events.some((e) => e.id === "LIFTOFF")) {
-        events.push({ id: "LIFTOFF", label: "LIFTOFF (derived)", idx: liftoffIdx, t_ms: frames[liftoffIdx].t_ms });
+      if (fe.burnoutIdx >= 0 && !events.some((e) => e.id === "BURNOUT")) {
+        events.push({ id: "BURNOUT", label: "BURNOUT (derived)", idx: fe.burnoutIdx, t_ms: frames[fe.burnoutIdx].t_ms });
       }
-
-      let maxAlt = -Infinity;
-      let apogeeIdx = -1;
-      for (let i = 0; i < alt.length; i++) {
-        const a = alt[i];
-        if (Number.isFinite(a) && a > maxAlt) {
-          maxAlt = a;
-          apogeeIdx = i;
-        }
+      if (fe.apogeeIdx >= 0 && !events.some((e) => e.id === "APOGEE")) {
+        events.push({ id: "APOGEE", label: "APOGEE (derived)", idx: fe.apogeeIdx, t_ms: frames[fe.apogeeIdx].t_ms });
       }
-      if (apogeeIdx >= 0 && !events.some((e) => e.id === "APOGEE")) {
-        events.push({ id: "APOGEE", label: "APOGEE (derived)", idx: apogeeIdx, t_ms: frames[apogeeIdx].t_ms });
-      }
-
-      let landingIdx = -1;
-      for (let i = alt.length - 1; i >= 0; i--) {
-        const a = alt[i];
-        if (Number.isFinite(a) && a < baseline + 2) {
-          landingIdx = i;
-          break;
-        }
-      }
-      if (landingIdx >= 0 && landingIdx > apogeeIdx && !events.some((e) => e.id === "LANDING")) {
-        events.push({ id: "LANDING", label: "LANDING (derived)", idx: landingIdx, t_ms: frames[landingIdx].t_ms });
+      if (fe.landingIdx >= 0 && fe.landingIdx > fe.apogeeIdx && !events.some((e) => e.id === "LANDING")) {
+        events.push({ id: "LANDING", label: "LANDING (derived)", idx: fe.landingIdx, t_ms: frames[fe.landingIdx].t_ms });
       }
     }
 
