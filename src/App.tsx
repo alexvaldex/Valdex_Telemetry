@@ -20,6 +20,7 @@ import type { Connection, ConnectionStatus } from "./transport/types";
 import { WebSerialConnection, isWebSerialSupported } from "./transport/webSerial";
 import { SimulatorConnection } from "./transport/simulator";
 import { TauriSerialConnection, isTauri, listNativePorts } from "./transport/tauriSerial";
+import { WebSocketConnection } from "./transport/webSocket";
 import { liveStore } from "./telemetry/liveStore";
 import { saveFlight, listFlights, getFlight, deleteFlight, checkpointLiveFlight, clearLiveCheckpoint, recoverLiveFlight, type FlightMeta } from "./telemetry/flightLog";
 import { startAlarm, stopAlarm } from "./audio/masterCaution";
@@ -704,7 +705,8 @@ function ModelStat(props: { label: string; value: string }) {
 
 export default function App() {
   /** Transport */
-  const [transportKind, setTransportKind] = useState<"simulator" | "serial">("simulator");
+  const [transportKind, setTransportKind] = useState<"simulator" | "serial" | "spectator">("simulator");
+  const [wsUrl, setWsUrl] = useState<string>(() => localStorage.getItem("vx.wsUrl") ?? "ws://");
   const [nativePorts, setNativePorts] = useState<string[]>([]);
   const [nativePort, setNativePort] = useState("");
   async function refreshNativePorts() {
@@ -1078,6 +1080,23 @@ export default function App() {
   /** Settings modal */
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  /** Presentation / spectator mode — fullscreen, chrome hidden, for the pad's
+      big screen. */
+  const [presentMode, setPresentMode] = useState(false);
+  function togglePresent() {
+    const next = !presentMode;
+    setPresentMode(next);
+    try {
+      if (next) void document.documentElement.requestFullscreen?.();
+      else if (document.fullscreenElement) void document.exitFullscreen?.();
+    } catch { /* fullscreen may be blocked; the class-based layout still applies */ }
+  }
+  useEffect(() => {
+    const onFs = () => { if (!document.fullscreenElement && presentMode) setPresentMode(false); };
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, [presentMode]);
+
   /** Export modal — one entry point, asks which file format to write. */
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -1291,9 +1310,11 @@ export default function App() {
     const conn: Connection =
       transportKind === "simulator"
         ? new SimulatorConnection()
-        : isTauri()
-          ? new TauriSerialConnection() // native serial in the desktop app
-          : new WebSerialConnection();
+        : transportKind === "spectator"
+          ? new WebSocketConnection()
+          : isTauri()
+            ? new TauriSerialConnection() // native serial in the desktop app
+            : new WebSerialConnection();
 
     const offLine = conn.onLine((line: string) => {
       logLinesRef.current.push(line);
@@ -1327,7 +1348,8 @@ export default function App() {
     };
 
     try {
-      await conn.connect({ baudRate, path: nativePort || undefined });
+      const path = transportKind === "spectator" ? wsUrl : (nativePort || undefined);
+      await conn.connect({ baudRate, path });
     } catch (err) {
       console.error("[connect] failed", err);
       connectionCleanupRef.current?.();
@@ -2287,7 +2309,10 @@ ${trkpts}
   }, [critSig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div style={{ position: "relative", zIndex: 1, padding: 14, fontFamily: "var(--vx-font-display)", color: "var(--vx-fg)" }}>
+    <div className={presentMode ? "vx-present" : undefined} style={{ position: "relative", zIndex: 1, padding: 14, fontFamily: "var(--vx-font-display)", color: "var(--vx-fg)" }}>
+      {presentMode && (
+        <button className="vx-present-exit vx-btn" onClick={togglePresent} title="Exit presentation (Esc)">Exit presentation</button>
+      )}
       <style>{`
         :root {
           --vx-bgA: ${theme.bgA};
@@ -2951,6 +2976,14 @@ ${trkpts}
         .vx-tl-lbl.above { bottom: 14px; }
         .vx-tl-lbl.below { top: 14px; }
         .vx-tl-time { font-family: var(--vx-font-mono); color: var(--vx-fg-faint); }
+
+        /* ---- Presentation / spectator mode: hide chrome for the big screen ---- */
+        .vx-present .vx-toolbar { display: none !important; }
+        .vx-present .vx-hdr-actions { display: none !important; }
+        .vx-present-exit {
+          position: fixed; top: 12px; right: 12px; z-index: 10001; opacity: 0.55;
+        }
+        .vx-present-exit:hover { opacity: 1; }
       `}</style>
 
       {/* ---------- Mission Control Header ---------- */}
@@ -3067,7 +3100,7 @@ ${trkpts}
             <Readout k="RATE" v={{ value: String(telemetry.packetsPerSec), unit: "pkt/s" }} />
           </div>
 
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="vx-hdr-actions" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {display.mode === "live" ? (
               <button className={`vx-btn ${frozen ? "vx-btn-danger" : ""}`} onClick={toggleFreeze} disabled={playback.mode === "playback"}>
                 {frozen ? "● Frozen" : "Freeze"} (F)
@@ -3075,6 +3108,8 @@ ${trkpts}
             ) : (
               <button className="vx-btn" onClick={exitPlayback}>Exit Playback</button>
             )}
+
+            <button className="vx-btn" onClick={togglePresent} title="Presentation mode — fullscreen big-screen view for the pad">Present</button>
 
             <button
               className={`vx-btn ${flightMode ? "vx-btn-danger" : "vx-btn-primary"}`}
@@ -3163,7 +3198,20 @@ ${trkpts}
           >
             <option value="simulator">Simulator</option>
             <option value="serial">Serial{isTauri() ? " (native)" : isWebSerialSupported() ? "" : " (unsupported browser)"}</option>
+            <option value="spectator">Spectator (WebSocket)</option>
           </select>
+
+          {transportKind === "spectator" && (
+            <input
+              className="vx-input"
+              style={{ width: 240, fontFamily: "var(--vx-font-mono)", fontSize: 12 }}
+              value={wsUrl}
+              onChange={(e) => { setWsUrl(e.target.value); localStorage.setItem("vx.wsUrl", e.target.value); }}
+              placeholder="ws://192.168.1.20:8787"
+              title="WebSocket URL of the shared telemetry stream"
+              disabled={connStatus !== "disconnected"}
+            />
+          )}
 
           {transportKind === "serial" && (
             <select

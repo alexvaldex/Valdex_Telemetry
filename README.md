@@ -101,6 +101,19 @@ point.
 stand, canard, airbrake, competition) so you start on a populated dashboard.
 Reachable anytime from Settings → Display.
 
+**Spectator mode (shared big screen).** One machine receives the radio and
+rebroadcasts the NDJSON over a WebSocket; every phone/laptop on the same Wi-Fi
+opens VX → transport **Spectator (WebSocket)** → `ws://<host>:<port>` and
+watches the same flight live. A dependency-free bridge is included:
+
+```sh
+<your serial reader> | node tools/vx-ws-bridge.mjs 8787
+# then, on each device: Spectator → ws://<this-machine-ip>:8787 → Connect
+```
+
+Hit **Present** in the header for a fullscreen, chrome-free view for the pad's
+big screen.
+
 Optional wire integrity: append an NMEA-style checksum — `{...}*1A2B` where
 the hex digits are **CRC-16/CCITT-FALSE** over the UTF-8 JSON text before the
 `*`. Corrupt lines are dropped and counted (Link Quality widget). Optional

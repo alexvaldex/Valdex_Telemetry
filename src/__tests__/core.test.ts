@@ -595,3 +595,43 @@ describe("verified CSV mapping (raw headers + user override)", () => {
     expect(m["Latitude"]).toBe("lat");
   });
 });
+
+describe("WebSocket spectator transport", () => {
+  it("splits batched messages into NDJSON lines across message boundaries", async () => {
+    let inst: any = null;
+    (globalThis as any).WebSocket = class {
+      static OPEN = 1;
+      readyState = 1;
+      url: string;
+      onopen: any; onmessage: any; onerror: any; onclose: any;
+      constructor(url: string) { this.url = url; inst = this; setTimeout(() => this.onopen && this.onopen(), 0); }
+      send() {}
+      close() { this.readyState = 3; this.onclose && this.onclose(); }
+    };
+    const { WebSocketConnection } = await import("../transport/webSocket");
+    const conn = new WebSocketConnection();
+    const lines: string[] = [];
+    conn.onLine((l) => lines.push(l));
+    await conn.connect({ baudRate: 0, path: "ws://x:1" } as any);
+    inst.onmessage({ data: '{"a":1}\n{"a":2}\n{"a":3' }); // last line partial
+    inst.onmessage({ data: '}\n' });                       // completes it
+    expect(lines).toEqual(['{"a":1}', '{"a":2}', '{"a":3}']);
+    await conn.disconnect();
+    expect(conn.status).toBe("disconnected");
+  });
+
+  it("prepends ws:// when the scheme is omitted", async () => {
+    let inst: any = null;
+    (globalThis as any).WebSocket = class {
+      static OPEN = 1; readyState = 1; url: string;
+      onopen: any; onmessage: any; onerror: any; onclose: any;
+      constructor(url: string) { this.url = url; inst = this; setTimeout(() => this.onopen && this.onopen(), 0); }
+      send() {} close() { this.onclose && this.onclose(); }
+    };
+    const { WebSocketConnection } = await import("../transport/webSocket");
+    const conn = new WebSocketConnection();
+    await conn.connect({ baudRate: 0, path: "192.168.1.5:8787" } as any);
+    expect(inst.url).toBe("ws://192.168.1.5:8787");
+    await conn.disconnect();
+  });
+});
