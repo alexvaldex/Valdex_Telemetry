@@ -1975,17 +1975,31 @@ ${trkpts}
     }
   }, [linkHealth, playback.mode, battProfile, connStatus]);
 
-  /** Custom alert rules engine (live + connected only). */
+  /** Custom alert rules engine (live + connected only). Debounced with
+      hysteresis: a rule must hold for a few consecutive samples before it
+      fires, and clear for a few before it releases — so one noisy packet can't
+      trip master caution, and a value hovering on the threshold won't flicker. */
+  const ruleDebounceRef = useRef<Record<string, { trueRun: number; falseRun: number; firing: boolean }>>({});
+  const RULE_FIRE_N = 3;
+  const RULE_CLEAR_N = 3;
   useEffect(() => {
     if (playback.mode === "playback") return;
     if (connStatus !== "connected") {
       for (const rule of alertRules) clearAlert(`rule-${rule.id}`);
+      ruleDebounceRef.current = {};
       return;
     }
     const latest = telemetry.latest as Record<string, unknown> | undefined;
+    const store = ruleDebounceRef.current;
     for (const rule of alertRules) {
       const id = `rule-${rule.id}`;
-      if (ruleFires(rule, latest)) {
+      const st = store[rule.id] ?? (store[rule.id] = { trueRun: 0, falseRun: 0, firing: false });
+      if (ruleFires(rule, latest)) { st.trueRun++; st.falseRun = 0; } else { st.falseRun++; st.trueRun = 0; }
+
+      if (!st.firing && st.trueRun >= RULE_FIRE_N) st.firing = true;
+      else if (st.firing && st.falseRun >= RULE_CLEAR_N) st.firing = false;
+
+      if (st.firing) {
         const v = latest?.[rule.field];
         pushAlert({
           id,
@@ -2070,12 +2084,22 @@ ${trkpts}
         if (mag > maxAccel) maxAccel = mag;
       }
     }
-    return {
-      apogeeM: Number.isFinite(maxAlt) ? maxAlt : undefined,
-      maxVelMps: Number.isFinite(maxVel) ? maxVel : undefined,
-      maxAccelG: Number.isFinite(maxAccel) ? maxAccel / 9.80665 : undefined,
-    };
-  }, [display.frames]);
+    let apogeeM = Number.isFinite(maxAlt) ? maxAlt : undefined;
+    let maxVelMps = Number.isFinite(maxVel) ? maxVel : undefined;
+    let maxAccelG = Number.isFinite(maxAccel) ? maxAccel / 9.80665 : undefined;
+
+    // Live mode: fold in the latched peaks so a long-flight ring-buffer wrap
+    // can't drop the competition-critical apogee / max-V / max-G.
+    if (playback.mode !== "playback") {
+      const lp = telemetry.peaks;
+      if (lp) {
+        if (typeof lp.maxAltM === "number") apogeeM = Math.max(apogeeM ?? -Infinity, lp.maxAltM);
+        if (typeof lp.maxVelMps === "number") maxVelMps = Math.max(maxVelMps ?? -Infinity, lp.maxVelMps);
+        if (typeof lp.maxAccelG === "number") maxAccelG = Math.max(maxAccelG ?? -Infinity, lp.maxAccelG);
+      }
+    }
+    return { apogeeM, maxVelMps, maxAccelG };
+  }, [display.frames, telemetry.peaks, playback.mode]);
 
   // Predicted apogee during ascent. During coast we measure the actual total
   // deceleration (gravity + drag) from the last ~1 s of frames, which folds the

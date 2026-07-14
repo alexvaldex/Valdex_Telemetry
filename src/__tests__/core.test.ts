@@ -526,3 +526,40 @@ describe("dashboard templates", () => {
     }
   });
 });
+
+describe("ingest hardening + peak latching", () => {
+  it("latches peak alt/vel/accel that survive a ring-buffer wrap", () => {
+    const st = initialTelemetryState();
+    // Push the true apogee early, then flood the buffer so it scrolls out.
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 1000, alt_m: 3000, vel_mps: 250, ax: 0, ay: 0, az: 60 }));
+    for (let i = 0; i < MAX_FRAMES + 50; i++) {
+      ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 2000 + i, alt_m: 10, vel_mps: 2 }));
+    }
+    // The apogee frame is gone from the buffer…
+    expect(st.frames.some((f) => f.alt_m === 3000)).toBe(false);
+    // …but the latched peaks kept it.
+    expect(st.peaks.maxAltM).toBe(3000);
+    expect(st.peaks.maxVelMps).toBe(250);
+    expect(st.peaks.maxAccelG).toBeCloseTo(60 / 9.80665, 2);
+  });
+
+  it("drops physically impossible values instead of storing them", () => {
+    const st = initialTelemetryState();
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 1, alt_m: 1e30, lat: 999, batt_v: 7.9 }));
+    expect(st.latest?.alt_m).toBeUndefined(); // 1e30 dropped
+    expect(st.latest?.lat).toBeUndefined();   // out-of-range dropped
+    expect(st.latest?.batt_v).toBe(7.9);      // valid kept
+    expect(st.peaks.maxAltM).toBeUndefined(); // the garbage never poisoned peaks
+  });
+
+  it("rebases the clock on a firmware reboot so MET stays monotonic", () => {
+    const st = initialTelemetryState();
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 60000, alt_m: 100 }));
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 60050, alt_m: 101 }));
+    // Reboot: t_ms jumps back to ~0.
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 0, alt_m: 102 }));
+    ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 50, alt_m: 103 }));
+    const ts = st.frames.map((f) => f.t_ms);
+    for (let i = 1; i < ts.length; i++) expect(ts[i]).toBeGreaterThan(ts[i - 1]); // strictly increasing
+  });
+});

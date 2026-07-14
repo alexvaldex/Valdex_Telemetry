@@ -20,6 +20,7 @@ function snapshotOf(state: TelemetryState, connected: boolean, packetsPerSec: nu
     frames: state.frames.slice(),
     rawLines: state.rawLines.slice(),
     events: state.events.slice(),
+    peaks: { ...state.peaks },
   };
 }
 
