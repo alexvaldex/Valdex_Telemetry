@@ -36,7 +36,7 @@ import {
 } from "./telemetry/vehicleStore";
 import type { Model3D, UpAxis } from "./widgets/rocketModel";
 import { getFieldMap, saveFieldMap, getUnknownKeys, V1_TARGET_KEYS, type FieldMapping } from "./telemetry/fieldMap";
-import { DEVICE_PROFILES, loadDeviceProfile, setDeviceProfile } from "./telemetry/deviceProfiles";
+import { DEVICE_PROFILES, loadDeviceProfile, setDeviceProfile, getLastCsvHeader, autoMapHeader } from "./telemetry/deviceProfiles";
 import {
   flightToFrames,
   toShareFlight,
@@ -4366,6 +4366,19 @@ function FieldMapModal(props: { onClose: () => void }) {
   const mappedSources = new Set(rows.map((r) => r.source));
   const suggestions = unknown.filter((k) => !mappedSources.has(k)).slice(0, 12);
 
+  // Detected CSV header → mapping preview (user overrides win over the fuzzy map).
+  const [csvHeader, setCsvHeader] = useState<string[] | null>(() => getLastCsvHeader());
+  useEffect(() => {
+    const t = window.setInterval(() => setCsvHeader(getLastCsvHeader()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const csvPreview = useMemo(() => {
+    if (!csvHeader) return [];
+    const userMap = new Map(rows.filter((r) => r.source && r.target).map((r) => [r.source, r.target]));
+    const fuzzy = autoMapHeader(csvHeader);
+    return csvHeader.map((col) => ({ col, target: userMap.get(col) ?? fuzzy[col] ?? null }));
+  }, [csvHeader, rows]);
+
   return (
     <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
       <div
@@ -4411,6 +4424,36 @@ function FieldMapModal(props: { onClose: () => void }) {
         <button className="vx-btn" style={{ marginTop: 10 }} onClick={() => setRows([...rows, { source: "", target: "" }])}>
           + Add mapping
         </button>
+
+        {/* Detected CSV columns → auto-mapping preview (verify before flying) */}
+        {csvPreview.length > 0 && (
+          <div className="vx-card" style={{ marginTop: 14 }}>
+            <div className="vx-label" style={{ marginBottom: 8 }}>Detected CSV columns → mapped to</div>
+            <div style={{ display: "grid", gap: 4 }}>
+              {csvPreview.map((c) => (
+                <div key={c.col} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 12, fontFamily: "var(--vx-font-mono)" }}>
+                  <span style={{ color: "var(--vx-fg-dim)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.col}</span>
+                  <span style={{ color: c.target ? "var(--vx-go)" : "var(--vx-fg-faint)", flex: "0 0 auto" }}>
+                    {c.target ?? "unmapped"}
+                    {!c.target && (
+                      <button
+                        className="vx-chip"
+                        style={{ marginLeft: 8, cursor: "pointer" }}
+                        title="Map this column"
+                        onClick={() => setRows([...rows.filter((r) => r.source || r.target), { source: c.col, target: "" }])}
+                      >
+                        map
+                      </button>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--vx-fg-faint)", marginTop: 8 }}>
+              Auto-mapped from the header. Override any column by adding a mapping above (your mapping wins).
+            </div>
+          </div>
+        )}
 
         {/* Live suggestions from the incoming stream */}
         <div className="vx-card" style={{ marginTop: 14 }}>

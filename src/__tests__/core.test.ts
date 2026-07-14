@@ -375,13 +375,16 @@ describe("sensor fusion + event gating", () => {
 });
 
 describe("device profiles (multi-format ingest)", () => {
-  it("auto-maps a CSV header and parses data rows", async () => {
-    const { setDeviceProfile, parseLine } = await import("../telemetry/deviceProfiles");
+  it("parses CSV data rows (raw headers) and auto-maps them to V1 keys", async () => {
+    const { setDeviceProfile, parseLine, applyAutoHeaderMap } = await import("../telemetry/deviceProfiles");
+    const { saveFieldMap } = await import("../telemetry/fieldMap");
+    saveFieldMap([]);
     setDeviceProfile("csv");
     // Header row is learned, returns null (no frame).
     expect(parseLine("Time_ms,Altitude (ft),Vel_mps,Batt V,Lat,Lon")).toBeNull();
-    const obj = parseLine("1500,328.084,42.5,7.9,28.6,-80.6")!;
-    expect(obj).not.toBeNull();
+    const raw = parseLine("1500,328.084,42.5,7.9,28.6,-80.6")!;
+    expect(raw["Time_ms"]).toBe(1500); // raw header preserved
+    const obj = applyAutoHeaderMap(raw);
     expect(obj.t_ms).toBe(1500);
     expect(obj.alt_ft).toBeCloseTo(328.084, 2); // "ft" header → alt_ft alias
     expect(obj.vel_mps).toBe(42.5);
@@ -561,5 +564,34 @@ describe("ingest hardening + peak latching", () => {
     ingestLineInPlace(st, JSON.stringify({ v: 1, t_ms: 50, alt_m: 103 }));
     const ts = st.frames.map((f) => f.t_ms);
     for (let i = 1; i < ts.length; i++) expect(ts[i]).toBeGreaterThan(ts[i - 1]); // strictly increasing
+  });
+});
+
+describe("verified CSV mapping (raw headers + user override)", () => {
+  it("user field map wins over the fuzzy auto-map", async () => {
+    const { setDeviceProfile, parseLine, applyAutoHeaderMap } = await import("../telemetry/deviceProfiles");
+    const { saveFieldMap } = await import("../telemetry/fieldMap");
+    setDeviceProfile("csv");
+    // "Altitude" would fuzzy-map to alt_m; the user forces it to gps_alt_m.
+    saveFieldMap([{ source: "Altitude", target: "gps_alt_m" }]);
+    parseLine("Time_ms,Altitude"); // header
+    const raw = parseLine("100,250")!;      // raw headers preserved
+    expect(raw["Altitude"]).toBe(250);
+    const { applyFieldMap } = await import("../telemetry/fieldMap");
+    const mapped = applyAutoHeaderMap(applyFieldMap(raw));
+    expect(mapped.gps_alt_m).toBe(250);     // user override applied
+    expect(mapped.alt_m).toBeUndefined();   // fuzzy did NOT also set alt_m
+    saveFieldMap([]);
+    setDeviceProfile("vx");
+  });
+
+  it("fuzzy map fills recognizable columns when the user hasn't mapped them", async () => {
+    const { autoMapHeader } = await import("../telemetry/deviceProfiles");
+    const m = autoMapHeader(["Altitude (ft)", "Vert accel (g)", "GPS Alt", "battery_voltage", "Latitude"]);
+    expect(m["Altitude (ft)"]).toBe("alt_ft");
+    expect(m["Vert accel (g)"]).toBe("az");
+    expect(m["GPS Alt"]).toBe("gps_alt_m");
+    expect(m["battery_voltage"]).toBe("batt_v");
+    expect(m["Latitude"]).toBe("lat");
   });
 });

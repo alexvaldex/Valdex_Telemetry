@@ -5,7 +5,7 @@ import { isTelemetryFrameV1 } from "./validate";
 import { applyFieldMap, trackUnknownKeys } from "./fieldMap";
 import { verifyAndStrip } from "./crc";
 import { latchPadOrigin } from "./padOrigin";
-import { parseLine } from "./deviceProfiles";
+import { parseLine, applyAutoHeaderMap } from "./deviceProfiles";
 
 /** Wire-integrity counters for the current session (shown in Link Quality). */
 let crcOk = 0;
@@ -41,8 +41,9 @@ export function ingestLineInPlace(state: TelemetryState, line: string): void {
   const parsed = parseLine(payload);
   if (parsed === null) return;
 
-  // User-defined firmware field remapping, then record unmapped keys for the UI.
-  const raw = applyFieldMap(parsed);
+  // User-defined field map wins first; then fuzzy header auto-mapping fills any
+  // remaining recognizable raw CSV/text column names; then record leftovers.
+  const raw = applyAutoHeaderMap(applyFieldMap(parsed));
   trackUnknownKeys(raw);
 
   const frame = normalizeTelemetryFrame(raw, Date.now());

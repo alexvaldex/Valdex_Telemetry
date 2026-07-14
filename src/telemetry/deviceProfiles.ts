@@ -17,6 +17,8 @@
  * Anything it misses is still correctable in the Field Map UI.
  */
 
+import { getFieldMap } from "./fieldMap";
+
 export type LineFormat = "json" | "csv" | "keyval" | "auto";
 
 export type DeviceProfile = {
@@ -99,14 +101,39 @@ function parseCsv(payload: string): Record<string, unknown> | null {
   }
   if (!csvHeader) return null; // data before any header — can't map yet
 
-  const map = autoMapHeader(csvHeader);
+  // Emit RAW header keys. The fuzzy header → V1 mapping happens later
+  // (applyAutoHeaderMap in ingest) so the user's own Field Map overrides win
+  // and the raw column names stay visible for verification.
   const obj: Record<string, unknown> = {};
   for (let i = 0; i < csvHeader.length && i < tokens.length; i++) {
-    const key = map[csvHeader[i]] ?? csvHeader[i];
     const v = coerce(tokens[i]);
-    if (v !== undefined && obj[key] === undefined) obj[key] = v;
+    if (v !== undefined) obj[csvHeader[i]] = v;
   }
   return Object.keys(obj).length ? obj : null;
+}
+
+/** The most recently learned CSV header row (for the mapping preview UI). */
+export function getLastCsvHeader(): string[] | null {
+  return csvHeader;
+}
+
+/**
+ * Fill in V1 fields from recognizable raw header names — the gap-filling step
+ * after the user's Field Map has had first pick. Only adds a mapped key when
+ * its target isn't already present, so user overrides and real V1 keys win.
+ */
+export function applyAutoHeaderMap(obj: Record<string, unknown>): Record<string, unknown> {
+  if (!obj || typeof obj !== "object") return obj;
+  // Columns the user has explicitly mapped are off-limits — their choice wins.
+  const userMapped = new Set(getFieldMap().map((m) => m.source));
+  for (const key of Object.keys(obj)) {
+    if (userMapped.has(key)) continue;
+    const target = matchHeader(key);
+    if (target && obj[target] === undefined && obj[key] !== undefined) {
+      obj[target] = obj[key];
+    }
+  }
+  return obj;
 }
 
 function parseKeyVal(payload: string): Record<string, unknown> | null {
@@ -159,12 +186,12 @@ function matchHeader(header: string): string | null {
 
   // Altitude
   if (h.includes("gpsalt") || (h.includes("gps") && h.includes("alt"))) return hasFt ? "gps_alt_ft" : "gps_alt_m";
-  if (h.includes("alt") || h.includes("agl") || h.includes("height")) return hasFt ? "alt_ft" : "alt_m";
+  if (h.includes("baroalt") || h.includes("alt") || h.includes("agl") || h.includes("height")) return hasFt ? "alt_ft" : "alt_m";
 
   // Velocity / speed
   if (h.includes("vel") || h.includes("speed")) return /fps|ftps|ft_s/.test(raw) ? "vz_fps" : "vel_mps";
 
-  // Battery / current
+  // Battery / current  (Altus: battery_voltage; Featherweight: Batt V)
   if (h.includes("batt") || h.includes("vbat") || h === "vbat" || h.includes("voltage")) return "batt_v";
   if (h.includes("current") || h.includes("amps") || h.includes("ibatt")) return "current_a";
 
@@ -172,12 +199,13 @@ function matchHeader(header: string): string | null {
   if (h.includes("rssi")) return "rssi_dbm";
   if (h.includes("snr")) return "snr_db";
 
-  // IMU
+  // IMU — per-axis first, then a bare vertical "acceleration" (Altus/Featherweight).
   if (h === "ax" || h.includes("accelx") || h.includes("accx")) return "ax";
   if (h === "ay" || h.includes("accely") || h.includes("accy")) return "ay";
-  if (h === "az" || h.includes("accelz") || h.includes("accz")) return "az";
+  if (h === "az" || h.includes("accelz") || h.includes("accz") || h.includes("vertaccel") || h.includes("axialaccel")) return "az";
+  if (h === "accel" || h === "acceleration") return "az"; // single vertical-accel column
   if (h === "gx" || h.includes("gyrox")) return "gx";
-  if (h === "gy" || h.includes("gyroy")) return "gy";
+  if (h === "gy" || h.includes("gyroy") || h.includes("rollrate")) return "gy";
   if (h === "gz" || h.includes("gyroz")) return "gz";
 
   // GPS
