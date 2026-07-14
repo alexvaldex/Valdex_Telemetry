@@ -91,6 +91,16 @@ HTML replay (interactive, works offline — send it or host it) or a compact lin
 that carries the flight in its own URL and opens straight into playback. No
 server, nothing uploaded.
 
+**Real motor curves.** In **Sim Setup**, import a RASP `.eng` or RockSim `.rse`
+motor file (from thrustcurve.org) and the simulator flies the actual thrust
+curve — real spike, max-Q, and burnout velocity — not a flat average. A `.ork`
+importer pulls diameter/mass/motor from an OpenRocket design as a starting
+point.
+
+**Templates.** First launch opens a template picker (HPR dual-deploy, TVC test
+stand, canard, airbrake, competition) so you start on a populated dashboard.
+Reachable anytime from Settings → Display.
+
 Optional wire integrity: append an NMEA-style checksum — `{...}*1A2B` where
 the hex digits are **CRC-16/CCITT-FALSE** over the UTF-8 JSON text before the
 `*`. Corrupt lines are dropped and counted (Link Quality widget). Optional

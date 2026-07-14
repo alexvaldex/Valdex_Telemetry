@@ -499,3 +499,30 @@ J350 38 186 5-10-15 0.192 0.360 Cesaroni
     expect(Math.abs(a - b)).toBeGreaterThan(0.5); // the shape actually matters
   });
 });
+
+describe("dashboard templates", () => {
+  it("every template produces a valid, non-overlapping 12-col layout", async () => {
+    const { TEMPLATES, templateLayout } = await import("../telemetry/templates");
+    for (const t of TEMPLATES) {
+      const { instances, layout } = templateLayout(t.widgets);
+      expect(instances.length).toBe(t.widgets.length);
+      expect(layout.length).toBe(t.widgets.length);
+      // Unique keys, all within 12 columns.
+      const keys = new Set(instances.map((i) => i.key));
+      expect(keys.size).toBe(instances.length);
+      for (const it of layout) {
+        expect(it.x).toBeGreaterThanOrEqual(0);
+        expect(it.x + it.w).toBeLessThanOrEqual(12);
+        expect(it.h).toBeGreaterThan(0);
+      }
+      // No two items overlap (rectangle intersection test).
+      for (let a = 0; a < layout.length; a++) {
+        for (let b = a + 1; b < layout.length; b++) {
+          const A = layout[a], B = layout[b];
+          const overlap = A.x < B.x + B.w && B.x < A.x + A.w && A.y < B.y + B.h && B.y < A.y + A.h;
+          expect(overlap).toBe(false);
+        }
+      }
+    }
+  });
+});

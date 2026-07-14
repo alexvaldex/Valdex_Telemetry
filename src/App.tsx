@@ -9,6 +9,7 @@ import { detectFlightEvents } from "./telemetry/fusion";
 
 import { WIDGETS, WIDGETS_BY_CATEGORY, type WidgetId } from "./widgets/registry";
 import { WIDGET_HELP, learnMoreUrl } from "./widgets/widgetHelp";
+import { TEMPLATES, templateLayout, type DashTemplate } from "./telemetry/templates";
 import type { UnitSystem } from "./units";
 import { renderWidget } from "./widgets/renderers";
 
@@ -1105,6 +1106,27 @@ export default function App() {
 
   /** Widget help modal — shows connection/troubleshooting/about for one widget. */
   const [helpWidget, setHelpWidget] = useState<WidgetId | null>(null);
+
+  /** First-run onboarding / template picker. Auto-opens only on a truly fresh
+      install (no prior layout), so returning users are never interrupted. */
+  const [onboardOpen, setOnboardOpen] = useState<boolean>(
+    () => !localStorage.getItem("vx.onboarded") && !localStorage.getItem("vx.instances")
+  );
+  function applyTemplate(t: DashTemplate) {
+    const { instances: ins, layout: lay } = templateLayout(t.widgets);
+    setInstances(ins);
+    setLayout(lay);
+    setWidgetSettings({});
+    persist(ins, lay);
+    localStorage.setItem("vx.widgetSettings", "{}");
+    localStorage.setItem("vx.onboarded", "1");
+    setSelectedPreset("");
+    setOnboardOpen(false);
+  }
+  function dismissOnboarding() {
+    localStorage.setItem("vx.onboarded", "1");
+    setOnboardOpen(false);
+  }
 
   /** Flight log */
   const [flightLogOpen, setFlightLogOpen] = useState(false);
@@ -2418,6 +2440,20 @@ ${trkpts}
           display: flex; flex-direction: column; grid-template-columns: none;
           width: min(600px, 94vw); height: auto; max-height: 86vh;
         }
+        .vx-modal.vx-onboard {
+          display: flex; flex-direction: column; grid-template-columns: none;
+          width: min(760px, 94vw); height: auto; max-height: 88vh;
+        }
+        .vx-tmpl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+        .vx-tmpl {
+          text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+          background: rgba(20, 20, 23, 0.5); border: 1px solid var(--vx-line); border-radius: 4px; padding: 14px;
+          color: var(--vx-fg); font-family: var(--vx-font-display);
+        }
+        .vx-tmpl:hover { border-color: var(--vx-accent); background: rgba(162, 166, 174, 0.08); }
+        .vx-tmpl-name { font-size: 14px; font-weight: 600; }
+        .vx-tmpl-desc { font-size: 12px; color: var(--vx-fg-dim); line-height: 1.55; }
+        .vx-tmpl-count { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--vx-fg-faint); margin-top: 2px; }
 
         .vx-settings-head {
           display: flex; align-items: center; justify-content: space-between;
@@ -3432,6 +3468,7 @@ ${trkpts}
           onMissionView={saveMissionView}
           docsUrl={docsUrl}
           onDocsUrl={saveDocsUrl}
+          onOpenTemplates={() => { setSettingsOpen(false); setOnboardOpen(true); }}
           onOpenExport={() => setExportOpen(true)}
           onOpenVehicle={() => setVehicleOpen(true)}
           onOpenAlertRules={() => setAlertRulesOpen(true)}
@@ -3465,6 +3502,14 @@ ${trkpts}
       {/* Widget help — connection, troubleshooting, and the operator's docs link */}
       {helpWidget && (
         <WidgetHelpModal widgetId={helpWidget} docsUrl={docsUrl} onClose={() => setHelpWidget(null)} />
+      )}
+
+      {/* First-run onboarding / template picker */}
+      {onboardOpen && (
+        <OnboardingModal
+          onPick={applyTemplate}
+          onClose={dismissOnboarding}
+        />
       )}
 
       {/* Vehicle Modal */}
@@ -4588,6 +4633,7 @@ function SettingsModal(props: {
   onMissionView: (v: "model" | "timeline") => void;
   docsUrl: string;
   onDocsUrl: (u: string) => void;
+  onOpenTemplates: () => void;
   onOpenExport: () => void;
   onOpenVehicle: () => void;
   onOpenAlertRules: () => void;
@@ -4714,6 +4760,14 @@ function SettingsModal(props: {
                     <button className="vx-tbtn" onClick={() => props.onZoom(0.1)}>+</button>
                   </div>
                 </div>
+              </div>
+
+              <div className="vx-card">
+                <div className="vx-card-title">Dashboard templates</div>
+                <div className="vx-help">Swap to a ready-made layout — HPR dual-deploy, TVC, canard, airbrake, competition.</div>
+                <button className="vx-btn" style={{ marginTop: 10 }} onClick={props.onOpenTemplates}>
+                  Choose a template…
+                </button>
               </div>
 
               <div className="vx-card">
@@ -4992,6 +5046,42 @@ function ExportModal(props: {
         <div className="vx-settings-foot">
           <button className="vx-btn" onClick={props.onClose}>Cancel</button>
           <button className="vx-btn vx-btn-primary" onClick={() => props.onExport(fmt)}>Export</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** ---------- OnboardingModal ----------
+ * First-run welcome + template picker so a new user lands on a populated,
+ * relevant dashboard instead of an empty grid. Also reachable from Settings. */
+function OnboardingModal(props: { onPick: (t: DashTemplate) => void; onClose: () => void }) {
+  return (
+    <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
+      <div className="vx-modal vx-onboard" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="vx-settings-head">
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>Welcome to VX Telemetry</div>
+            <div className="vx-help" style={{ marginTop: 2 }}>Pick a starting layout — then choose Simulator and hit Connect to watch a full flight.</div>
+          </div>
+          <button className="vx-xbtn" onClick={props.onClose}>×</button>
+        </div>
+
+        <div className="vx-settings-body">
+          <div className="vx-tmpl-grid">
+            {TEMPLATES.map((t) => (
+              <button key={t.id} className="vx-tmpl" onClick={() => props.onPick(t)}>
+                <div className="vx-tmpl-name">{t.name}</div>
+                <div className="vx-tmpl-desc">{t.desc}</div>
+                <div className="vx-tmpl-count">{t.widgets.length} widget{t.widgets.length === 1 ? "" : "s"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="vx-settings-foot" style={{ justifyContent: "space-between" }}>
+          <span className="vx-help">You can switch layouts anytime in Settings → Display.</span>
+          <button className="vx-btn" onClick={props.onClose}>Skip</button>
         </div>
       </div>
     </div>
