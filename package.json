@@ -1,7 +1,7 @@
 {
   "name": "vx-telemetry",
   "productName": "VX Telemetry",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Universal ground station for rocketry telemetry — live dashboard for altimeters, GPS, flight computers, and radios.",
   "scripts": {
     "dev": "vite",
