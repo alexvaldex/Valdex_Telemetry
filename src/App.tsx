@@ -753,6 +753,12 @@ export default function App() {
     setFlightMode(next);
     localStorage.setItem("vx.flightMode", next ? "1" : "0");
   }
+  /** Flip the layout lock. A plain toggle — the old confirm() gate silently
+      failed inside the desktop WebView (window.confirm returns falsy there),
+      which left users unable to ever leave Flight (Locked) mode. */
+  function toggleFlightMode() {
+    setFlightModePersist(!flightMode);
+  }
 
   /** Global units (moved to Settings UI) */
   const [globalUnits, setGlobalUnits] = useState<UnitSystem>(() => {
@@ -3113,13 +3119,8 @@ ${trkpts}
 
             <button
               className={`vx-btn ${flightMode ? "vx-btn-danger" : "vx-btn-primary"}`}
-              onClick={() => {
-                if (!flightMode) setFlightModePersist(true);
-                else {
-                  const ok = window.confirm("Unlock layout? This enables dragging/resizing/adding/removing widgets.");
-                  if (ok) setFlightModePersist(false);
-                }
-              }}
+              onClick={toggleFlightMode}
+              title={flightMode ? "Unlock layout — enable dragging, resizing, adding & removing widgets" : "Lock layout for flight — prevents accidental edits"}
             >
               {flightMode ? "◆ Flight (Locked)" : "◇ Build Mode"}
             </button>
@@ -3641,11 +3642,7 @@ ${trkpts}
           }}
           onToggleMode={() => {
             setPaletteOpen(false);
-            if (!flightMode) setFlightModePersist(true);
-            else {
-              const ok = window.confirm("Unlock layout? This enables dragging/resizing/adding/removing widgets.");
-              if (ok) setFlightModePersist(false);
-            }
+            toggleFlightMode();
           }}
           onExportJSONL={() => {
             setPaletteOpen(false);
