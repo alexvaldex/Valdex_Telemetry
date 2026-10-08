@@ -6,3 +6,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 official logo.png
+
+# Local-only strategy + branding drafts (do not publish to this public repo)
+ROADMAP.md
+BUSINESS-PLAN.md
+branding/

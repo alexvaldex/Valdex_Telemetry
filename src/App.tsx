@@ -723,6 +723,12 @@ export default function App() {
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("disconnected");
   const [connError, setConnError] = useState<string | null>(null);
   const [frameTesterOpen, setFrameTesterOpen] = useState(false);
+  // 1 Hz tick so the mission-control footer clock keeps moving while idle.
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
   const connectionRef = useRef<Connection | null>(null);
   const connectionCleanupRef = useRef<(() => void) | null>(null);
 
@@ -2707,13 +2713,18 @@ ${trkpts}
           margin-bottom: 12px;
         }
         .vx-hdr-panel {
-          border: 1px solid var(--vx-line);
-          background: linear-gradient(180deg, rgba(162, 166, 174,0.05), rgba(20, 20, 23,0.5));
+          position: relative;
+          border: 1px solid var(--vx-line-strong);
+          background:
+            linear-gradient(180deg, rgba(190, 193, 200,0.06), rgba(20, 20, 23,0.55)),
+            var(--vx-panel-solid);
           border-radius: 4px;
           padding: 10px 14px;
           display: flex;
           flex-direction: column;
           justify-content: center;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), inset 0 0 26px rgba(0,0,0,0.38);
+          overflow: hidden;
         }
         .vx-brand {
           display: flex;
@@ -2748,12 +2759,13 @@ ${trkpts}
           font-family: var(--vx-font-mono);
           font-variant-numeric: tabular-nums;
           font-weight: 800;
-          font-size: 40px;
+          font-size: 46px;
           line-height: 1;
-          letter-spacing: 0.02em;
+          letter-spacing: 0.03em;
           color: var(--vx-fg);
+          text-shadow: 0 0 18px rgba(0,0,0,0.55), 0 0 2px rgba(255,255,255,0.12);
         }
-        .vx-clock-time.counting { color: var(--vx-go); text-shadow: 0 0 20px var(--vx-go-glow); }
+        .vx-clock-time.counting { color: var(--vx-go); text-shadow: 0 0 28px var(--vx-go-glow), 0 0 3px var(--vx-go); }
         .vx-phase-track {
           display: flex;
           gap: 4px;
@@ -2764,19 +2776,24 @@ ${trkpts}
           font-size: 10px;
           letter-spacing: 0.08em;
           text-transform: uppercase;
-          padding: 3px 7px;
+          padding: 4px 9px;
           border-radius: 2px;
           border: 1px solid var(--vx-line);
           color: var(--vx-fg-faint);
-          background: transparent;
+          background: rgba(20, 20, 23,0.45);
           white-space: nowrap;
+          transition: all 0.25s ease;
         }
-        .vx-phase-step.done { color: var(--vx-fg-dim); border-color: var(--vx-line); }
+        .vx-phase-step.done {
+          color: var(--vx-go);
+          border-color: rgba(36,224,138,0.38);
+          background: rgba(36,224,138,0.08);
+        }
         .vx-phase-step.active {
           color: var(--vx-bg0);
-          background: var(--vx-accent);
-          border-color: var(--vx-accent-bright);
-          box-shadow: 0 0 14px var(--vx-accent-glow);
+          background: var(--vx-accent-bright);
+          border-color: #ffffff;
+          box-shadow: 0 0 18px var(--vx-accent-glow), inset 0 0 8px rgba(255,255,255,0.4);
           font-weight: 700;
         }
 
@@ -2788,14 +2805,17 @@ ${trkpts}
           align-items: stretch;
         }
         .vx-status-cell {
+          position: relative;
           border: 1px solid var(--vx-line);
+          border-top: 1px solid var(--vx-line-strong);
           border-radius: 3px;
-          padding: 6px 10px;
-          min-width: 74px;
-          background: rgba(20, 20, 23,0.5);
+          padding: 7px 11px;
+          min-width: 76px;
+          background: linear-gradient(180deg, rgba(190, 193, 200,0.05), rgba(20, 20, 23,0.62));
           display: flex;
           flex-direction: column;
           gap: 3px;
+          box-shadow: inset 0 0 18px rgba(0,0,0,0.3);
         }
         .vx-status-cell .k { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--vx-fg-dim); }
         .vx-status-cell .v {
@@ -2816,14 +2836,16 @@ ${trkpts}
           display: flex;
           gap: 1px;
           flex-wrap: wrap;
-          border: 1px solid var(--vx-line);
+          border: 1px solid var(--vx-line-strong);
           border-radius: 4px;
           overflow: hidden;
           background: var(--vx-line);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 2px 10px rgba(0,0,0,0.3);
         }
         .vx-readout {
-          background: rgba(20, 20, 23,0.9);
-          padding: 8px 14px;
+          position: relative;
+          background: linear-gradient(180deg, rgba(190, 193, 200,0.035), rgba(20, 20, 23,0.92));
+          padding: 9px 14px;
           display: flex;
           flex-direction: column;
           gap: 3px;
@@ -2835,11 +2857,53 @@ ${trkpts}
           font-family: var(--vx-font-mono);
           font-variant-numeric: tabular-nums;
           font-weight: 700;
-          font-size: 18px;
+          font-size: 19px;
           color: var(--vx-fg);
+          text-shadow: 0 0 10px rgba(0,0,0,0.5);
         }
         .vx-readout .v small { font-size: 11px; color: var(--vx-fg-dim); font-weight: 500; margin-left: 3px; }
-        .vx-readout.peak .v { color: var(--vx-accent-bright); }
+        .vx-readout.peak .v { color: var(--vx-accent-bright); text-shadow: 0 0 12px var(--vx-accent-glow); }
+
+        /* ---------- Mission-control status footer ---------- */
+        .vx-statusbar {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          position: sticky;
+          bottom: 8px;
+          z-index: 20;
+          margin-top: 12px;
+          border: 1px solid var(--vx-line-strong);
+          border-radius: 4px;
+          background: linear-gradient(180deg, rgba(28, 28, 32,0.96), rgba(8, 8, 10,0.97));
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 -4px 24px rgba(0,0,0,0.5);
+          overflow: hidden;
+          font-size: 11px;
+          backdrop-filter: blur(6px);
+        }
+        .vx-statusbar .seg {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          padding: 7px 14px;
+          border-right: 1px solid var(--vx-line);
+          white-space: nowrap;
+          color: var(--vx-fg);
+        }
+        .vx-statusbar .seg.brand {
+          font-family: var(--vx-font-display);
+          font-weight: 700;
+          letter-spacing: 0.16em;
+          text-transform: uppercase;
+          color: var(--vx-fg-dim);
+          font-size: 10px;
+        }
+        .vx-statusbar .seg.right { margin-left: auto; border-right: none; border-left: 1px solid var(--vx-line); }
+        .vx-statusbar .lk { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--vx-fg-faint); }
+        .vx-statusbar b { font-weight: 700; color: var(--vx-fg); }
+        .vx-statusbar b.go { color: var(--vx-go); text-shadow: 0 0 10px var(--vx-go-glow); }
+        .vx-statusbar b.caution { color: var(--vx-caution); }
+        .vx-statusbar b.crit { color: var(--vx-crit); }
 
         /* ---------- Widget chrome ---------- */
         .vx-seg {
@@ -3034,6 +3098,7 @@ ${trkpts}
 
           {/* Mission clock + phase */}
           <div className="vx-hdr-panel vx-clock">
+            <div className="vx-scanbeam" aria-hidden="true" />
             <div
               className={`vx-clock-time ${missionClock.counting ? "counting" : ""}`}
               style={missionClock.holding ? { color: "var(--vx-caution)", textShadow: "0 0 20px var(--vx-caution-glow)" } : undefined}
@@ -3513,6 +3578,23 @@ ${trkpts}
           ))}
         </RGL>
         </div>
+
+        {/* Mission-control status footer */}
+        {(() => {
+          const connClass = connStatus === "connected" ? "go" : connStatus === "connecting" ? "caution" : "";
+          const connText = connStatus === "connected" ? "LIVE" : connStatus === "connecting" ? "ACQUIRING" : "STANDBY";
+          return (
+            <div className="vx-statusbar">
+              <div className="seg brand"><span className="vx-live-dot" style={{ color: connStatus === "connected" ? "var(--vx-go)" : "var(--vx-fg-faint)" }}>●</span> Valdex Mission Control</div>
+              <div className="seg"><span className="lk">Status</span> <b className={connClass}>{connText}</b></div>
+              <div className="seg"><span className="lk">MET</span> <b className="vx-num">{missionClock.label}</b></div>
+              <div className="seg"><span className="lk">Phase</span> <b>{flightPhase}</b></div>
+              <div className="seg"><span className="lk">Packets</span> <b className="vx-num">{logCount.toLocaleString()}</b></div>
+              <div className="seg"><span className="lk">Rate</span> <b className="vx-num">{telemetry.packetsPerSec}</b> <span className="lk">pkt/s</span></div>
+              <div className="seg right"><span className="lk">UTC</span> <b className="vx-num">{new Date().toUTCString().slice(17, 25)}</b></div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Context Menu */}

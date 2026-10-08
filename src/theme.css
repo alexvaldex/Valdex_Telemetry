@@ -88,6 +88,18 @@ body {
   mask-image: radial-gradient(ellipse 100% 80% at 50% 0%, #000 40%, transparent 100%);
 }
 
+/* Console scanlines + screen vignette behind the panels (very subtle). */
+#root::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0) 0 2px, rgba(0, 0, 0, 0.10) 2px 3px),
+    radial-gradient(135% 95% at 50% -6%, transparent 56%, rgba(0, 0, 0, 0.55) 100%);
+}
+
 /* Numeric / telemetry values should always be mono + tabular */
 .vx-num {
   font-family: var(--vx-font-mono);
@@ -174,3 +186,54 @@ body {
 :root.vx-field #root::before {
   display: none; /* no decorative grid competing with sunlight */
 }
+:root.vx-field #root::after {
+  display: none; /* no scanlines or vignette under sunlight */
+}
+
+/* ============================================================
+   Mission-control motion + instrumentation helpers
+   ============================================================ */
+
+/* Scan beam that sweeps across a live/active surface. */
+@keyframes vx-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
+}
+.vx-scanbeam {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.vx-scanbeam::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, var(--vx-accent-bright), transparent);
+  opacity: 0.5;
+  animation: vx-sweep 5.5s linear infinite;
+}
+
+/* Soft breathing pulse for the live GO state. */
+@keyframes vx-pulse-go {
+  0%, 100% { box-shadow: 0 0 0 0 var(--vx-go-glow); }
+  50% { box-shadow: 0 0 10px 1px var(--vx-go-glow); }
+}
+
+/* Corner ticks for a panel. Apply .vx-ticked to a position:relative element. */
+.vx-ticked::before,
+.vx-ticked::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border-color: var(--vx-line-strong);
+  pointer-events: none;
+  opacity: 0.8;
+}
+.vx-ticked::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; }
+.vx-ticked::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
