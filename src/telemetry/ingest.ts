@@ -93,8 +93,9 @@ export function ingestLineInPlace(state: TelemetryState, line: string): void {
 }
 
 /** Plausible bounds per field; a value outside its range (or non-finite) is
-    dropped rather than kept, so one garbled packet can't corrupt the session. */
-const FIELD_BOUNDS: Record<string, [number, number]> = {
+    dropped rather than kept, so one garbled packet can't corrupt the session.
+    Exported so the Frame Tester reports the same drops the live path applies. */
+export const FIELD_BOUNDS: Record<string, [number, number]> = {
   alt_m: [-1000, 150000], gps_alt_m: [-1000, 150000],
   vel_mps: [-8000, 8000],
   ax: [-2000, 2000], ay: [-2000, 2000], az: [-2000, 2000],

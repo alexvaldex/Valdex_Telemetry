@@ -21,6 +21,7 @@ import { WebSerialConnection, isWebSerialSupported } from "./transport/webSerial
 import { SimulatorConnection } from "./transport/simulator";
 import { TauriSerialConnection, isTauri, listNativePorts } from "./transport/tauriSerial";
 import { WebSocketConnection } from "./transport/webSocket";
+import { analyzeLine, exampleFrameLine } from "./telemetry/analyzeLine";
 import { liveStore } from "./telemetry/liveStore";
 import { saveFlight, listFlights, getFlight, deleteFlight, checkpointLiveFlight, clearLiveCheckpoint, recoverLiveFlight, type FlightMeta } from "./telemetry/flightLog";
 import { startAlarm, stopAlarm } from "./audio/masterCaution";
@@ -720,6 +721,8 @@ export default function App() {
   }
   const [baudRate, setBaudRate] = useState(115200);
   const [connStatus, setConnStatus] = useState<ConnectionStatus>("disconnected");
+  const [connError, setConnError] = useState<string | null>(null);
+  const [frameTesterOpen, setFrameTesterOpen] = useState(false);
   const connectionRef = useRef<Connection | null>(null);
   const connectionCleanupRef = useRef<(() => void) | null>(null);
 
@@ -1301,6 +1304,7 @@ export default function App() {
       return;
     }
 
+    setConnError(null);
     sessionStartRef.current = Date.now();
     logLinesRef.current = [];
     setLogCount(0);
@@ -1358,6 +1362,7 @@ export default function App() {
       await conn.connect({ baudRate, path });
     } catch (err) {
       console.error("[connect] failed", err);
+      setConnError(err instanceof Error ? err.message : String(err));
       connectionCleanupRef.current?.();
       connectionCleanupRef.current = null;
       connectionRef.current = null;
@@ -3227,6 +3232,16 @@ ${trkpts}
             </select>
           )}
 
+          {transportKind !== "simulator" && (
+            <button
+              className="vx-btn"
+              onClick={() => setFrameTesterOpen(true)}
+              title="Paste a line your hardware sends and check it parses, maps, and will show up live. No connection needed."
+            >
+              Test Line
+            </button>
+          )}
+
           {transportKind === "simulator" && (
             <button
               className="vx-btn"
@@ -3290,6 +3305,15 @@ ${trkpts}
           {connStatus === "connected" && (
             <span className="vx-chip" title="Recording — session checkpointed to disk every 5 s" style={{ borderColor: "rgba(255,59,71,0.5)", color: "var(--vx-crit)" }}>
               <span className="vx-live-dot">●</span> REC
+            </span>
+          )}
+          {connError && connStatus === "disconnected" && (
+            <span
+              className="vx-chip"
+              title={connError}
+              style={{ borderColor: "rgba(255,59,71,0.5)", color: "var(--vx-crit)", maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              CONNECT FAILED: {connError}
             </span>
           )}
 
@@ -3617,6 +3641,7 @@ ${trkpts}
 
       {/* Field Map Modal */}
       {fieldMapOpen && <FieldMapModal onClose={() => setFieldMapOpen(false)} />}
+      {frameTesterOpen && <FrameTesterModal onClose={() => setFrameTesterOpen(false)} />}
 
       {/* Alert Rules Modal */}
       {alertRulesOpen && (
@@ -4445,6 +4470,117 @@ function AlertRulesModal(props: { rules: AlertRule[]; onChange: (rules: AlertRul
         </div>
 
         <button className="vx-btn vx-btn-primary" style={{ marginTop: 12 }} onClick={addRule}>+ Add rule</button>
+      </div>
+    </div>
+  );
+}
+
+/** ---------- FrameTesterModal — validate a line before you ever connect ---------- */
+function FrameTesterModal(props: { onClose: () => void }) {
+  const [text, setText] = useState<string>(() => exampleFrameLine(false));
+  const a = useMemo(() => analyzeLine(text, true), [text]);
+
+  const verdict = a.empty
+    ? { label: "ENTER A LINE", color: "var(--vx-fg-faint)" }
+    : a.wouldIngest
+      ? { label: "WILL INGEST", color: "var(--vx-go)" }
+      : { label: "WON'T INGEST", color: "var(--vx-crit)" };
+
+  const fieldEntries = Object.entries(a.fields).filter(([k]) => k !== "t_ms");
+
+  return (
+    <div className="vx-modal-backdrop" onMouseDown={props.onClose}>
+      <div
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          width: "min(720px, 95vw)", maxHeight: "88vh", overflow: "auto",
+          background: "rgba(17, 17, 18,0.98)", border: "1px solid var(--vx-line-strong)",
+          borderRadius: 4, boxShadow: "0 22px 70px rgba(0,0,0,0.75)", padding: 20,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", fontSize: 15 }}>Frame Tester</div>
+          <button className="vx-xbtn" onClick={props.onClose}>×</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--vx-fg-dim)", lineHeight: 1.6, marginBottom: 12 }}>
+          Paste one line exactly as your flight computer sends it. This runs the same pipeline the live link uses
+          (CRC, parse, field map, normalize, bounds), so you can confirm it will show up before you connect any hardware.
+        </div>
+
+        <textarea
+          className="vx-input"
+          spellCheck={false}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={'{"v":1,"t_ms":1000,"alt_m":120.5, ...}'}
+          style={{ width: "100%", minHeight: 70, fontFamily: "var(--vx-font-mono)", fontSize: 12, resize: "vertical" }}
+        />
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+          <button className="vx-btn" onClick={() => setText(exampleFrameLine(false))}>Insert example</button>
+          <button className="vx-btn" onClick={() => setText(exampleFrameLine(true))}>Example + CRC</button>
+          <button className="vx-btn" onClick={() => setText("")}>Clear</button>
+        </div>
+
+        <div className="vx-card" style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 700, fontSize: 18, letterSpacing: "0.08em", color: verdict.color }}>{verdict.label}</div>
+          {!a.empty && (
+            <div style={{ display: "flex", gap: 14, fontSize: 12, fontFamily: "var(--vx-font-mono)", color: "var(--vx-fg-dim)", flexWrap: "wrap" }}>
+              <span>format: <b style={{ color: "var(--vx-fg)" }}>{a.format}</b></span>
+              <span>crc: <b style={{ color: a.crc === "bad" ? "var(--vx-crit)" : a.crc === "ok" ? "var(--vx-go)" : "var(--vx-fg-dim)" }}>{a.crc}</b></span>
+              <span>valid: <b style={{ color: a.valid ? "var(--vx-go)" : "var(--vx-crit)" }}>{String(a.valid)}</b></span>
+            </div>
+          )}
+        </div>
+
+        {a.notes.length > 0 && (
+          <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
+            {a.notes.map((n, i) => (
+              <div key={i} style={{ fontSize: 12, color: "var(--vx-fg-dim)", lineHeight: 1.5, paddingLeft: 12, borderLeft: "2px solid var(--vx-line-strong)" }}>{n}</div>
+            ))}
+          </div>
+        )}
+
+        {!a.empty && a.frame && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 14 }}>
+            <div className="vx-card">
+              <div className="vx-label" style={{ marginBottom: 8 }}>Recognized fields ({fieldEntries.length})</div>
+              {fieldEntries.length ? (
+                <div style={{ display: "grid", gap: 3 }}>
+                  {fieldEntries.map(([k, v]) => (
+                    <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12, fontFamily: "var(--vx-font-mono)" }}>
+                      <span style={{ color: "var(--vx-go)" }}>{k}</span>
+                      <span style={{ color: "var(--vx-fg-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div style={{ fontSize: 12, color: "var(--vx-fg-faint)" }}>No telemetry fields populated.</div>}
+            </div>
+            <div className="vx-card">
+              <div className="vx-label" style={{ marginBottom: 8 }}>Unrecognized keys ({a.unknownKeys.length})</div>
+              {a.unknownKeys.length ? (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {a.unknownKeys.map((k) => (
+                    <span key={k} className="vx-chip" style={{ color: "var(--vx-caution)" }}>{k}</span>
+                  ))}
+                </div>
+              ) : <div style={{ fontSize: 12, color: "var(--vx-fg-faint)" }}>None. Every field reached the contract.</div>}
+              {a.droppedByBounds.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div className="vx-label" style={{ marginBottom: 6 }}>Blanked (out of range)</div>
+                  <div style={{ display: "grid", gap: 3 }}>
+                    {a.droppedByBounds.map((d) => (
+                      <div key={d.key} style={{ fontSize: 12, fontFamily: "var(--vx-font-mono)", color: "var(--vx-crit)" }}>
+                        {d.key} = {String(d.value)}{d.range ? ` (allowed ${d.range[0]}..${d.range[1]})` : ""}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
