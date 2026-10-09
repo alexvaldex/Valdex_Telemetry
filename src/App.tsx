@@ -387,7 +387,7 @@ function MissionLogo() {
   // header and the OS-level app icon/favicon are the exact same artwork.
   return (
     <img
-      src="/vx-logo.png"
+      src={`${import.meta.env.BASE_URL}vx-logo.png`}
       alt="VX Rocketry"
       width={44}
       height={44}
