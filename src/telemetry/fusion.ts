@@ -82,6 +82,10 @@ export function fuseAltVel(frames: TelemetryFrameV1[]): FusedTrack {
   if (!n) return { altF, velF };
 
   const divisor = accelUnitDivisor(frames);
+  // Without an accelerometer the filter has no process input and assumes zero
+  // acceleration, so its velocity lags a coasting rocket (−1 g) by seconds.
+  // Baro-only streams get much higher process noise so it tracks the baro.
+  const baroOnly = !frames.some((f) => rawAccelMag(f) !== null);
 
   // State [alt, vel], covariance P.
   let alt = NaN, vel = 0;
@@ -113,7 +117,7 @@ export function fuseAltVel(frames: TelemetryFrameV1[]): FusedTrack {
     vel = vel + u * dt;
 
     // Process noise grows with dt; extra velocity noise absorbs accel error.
-    const q = 0.6;
+    const q = baroOnly ? 40 : 0.6;
     const dt2 = dt * dt, dt3 = dt2 * dt, dt4 = dt2 * dt2;
     const Q00 = q * dt4 / 4, Q01 = q * dt3 / 2, Q11 = q * dt2;
     p00 = p00 + dt * (p10 + p01) + dt2 * p11 + Q00;
@@ -239,12 +243,18 @@ export function detectFlightEvents(frames: TelemetryFrameV1[]): FlightEvents {
         run = 0;
       }
     }
-    // Fallback: global max of fused altitude after liftoff.
+    // Fallback: global max of fused altitude after liftoff, but only once the
+    // vehicle has clearly come back down from it. On a live, still-climbing
+    // flight the running max is always the newest sample, so accepting it
+    // unconditionally declared apogee mid-ascent.
     if (apogeeIdx < 0) {
-      let mx = -Infinity;
+      let mx = -Infinity, mxIdx = -1;
       for (let i = liftoffIdx; i < n; i++) {
-        if (Number.isFinite(altF[i]) && altF[i] > mx) { mx = altF[i]; apogeeIdx = i; }
+        if (Number.isFinite(altF[i]) && altF[i] > mx) { mx = altF[i]; mxIdx = i; }
       }
+      const last = altF[n - 1];
+      const drop = Math.max(5, 0.03 * (mx - baseline));
+      if (mxIdx >= 0 && mxIdx < n - NEED && Number.isFinite(last) && last < mx - drop) apogeeIdx = mxIdx;
     }
   }
 

@@ -635,3 +635,32 @@ describe("WebSocket spectator transport", () => {
     await conn.disconnect();
   });
 });
+
+
+describe("apogee detection", () => {
+  // Synthetic baro-only flight: climbs at 80 m/s for 6 s, then coasts.
+  const flight = (seconds: number) => {
+    const frames: TelemetryFrameV1[] = [];
+    for (let t = 0; t <= seconds * 20; t++) {
+      const s = t / 20;
+      const pad = s < 2;
+      const fs = s - 2;
+      const alt = pad ? 0 : fs < 6 ? 80 * fs - 4.9 * fs * fs : 80 * 6 - 4.9 * 36 + (80 - 9.8 * 6) * (fs - 6) - 4.9 * (fs - 6) ** 2;
+      frames.push({ v: 1, t_ms: t * 50, alt_m: alt } as TelemetryFrameV1);
+    }
+    return frames;
+  };
+
+  it("does not declare apogee while the vehicle is still climbing", () => {
+    // 2 s pad + 4 s of climb: well before the real apogee
+    expect(detectFlightEvents(flight(6)).apogeeIdx).toBe(-1);
+  });
+
+  it("finds apogee once the vehicle comes back down", () => {
+    const frames = flight(16);
+    const ev = detectFlightEvents(frames);
+    expect(ev.apogeeIdx).toBeGreaterThan(0);
+    // true apogee for this profile is ~8.2 s after liftoff (t ≈ 10.2 s)
+    expect(Math.abs(frames[ev.apogeeIdx].t_ms / 1000 - 10.2)).toBeLessThan(1.5);
+  });
+});
